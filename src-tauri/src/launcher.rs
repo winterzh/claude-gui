@@ -86,16 +86,48 @@ pub fn launch_claude_code() -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("Failed to open Terminal: {}", e))?;
     } else if cfg!(target_os = "windows") {
-        let bat_path = vhome.join("_launch.bat");
-        let bat = format!(
-            "@echo off\nset HOME={}\nset USERPROFILE={}\nset ANTHROPIC_API_KEY={}\nset ANTHROPIC_BASE_URL={}\ncd /d \"{}\"\n{}\n",
-            vhome_str, vhome_str, cfg.api_key, cfg.base_url, working_dir, claude_cmd,
+        let script_path = vhome.join("_launch.sh");
+        let script = format!(
+            "#!/bin/bash\nexport HOME='{}'\nexport USERPROFILE='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
+            vhome_str.replace('\\', "/"),
+            vhome_str.replace('\\', "/"),
+            cfg.api_key,
+            cfg.base_url,
+            working_dir.replace('\\', "/"),
+            claude_cmd.replace('\\', "/"),
         );
-        fs::write(&bat_path, &bat).map_err(|e| e.to_string())?;
-        Command::new("cmd")
-            .args(["/c", "start", "cmd", "/k", &bat_path.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("Failed to open cmd: {}", e))?;
+        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
+
+        // Find Git Bash
+        let git_bash_paths = [
+            r"C:\Program Files\Git\git-bash.exe",
+            r"C:\Program Files (x86)\Git\git-bash.exe",
+        ];
+        let git_bash = git_bash_paths.iter().find(|p| std::path::Path::new(p).exists());
+
+        if let Some(bash) = git_bash {
+            Command::new(bash)
+                .args(["--cd", &working_dir, "-l", "-i", &script_path.to_string_lossy()])
+                .spawn()
+                .map_err(|e| format!("Failed to open Git Bash: {}", e))?;
+        } else {
+            // Fallback: try mintty (Git for Windows terminal)
+            let mintty_paths = [
+                r"C:\Program Files\Git\usr\bin\mintty.exe",
+                r"C:\Program Files (x86)\Git\usr\bin\mintty.exe",
+            ];
+            let mintty = mintty_paths.iter().find(|p| std::path::Path::new(p).exists());
+
+            if let Some(m) = mintty {
+                let bash_exe = r"C:\Program Files\Git\bin\bash.exe";
+                Command::new(m)
+                    .args(["-t", "Claude Code", "-e", bash_exe, "--login", "-i", &script_path.to_string_lossy()])
+                    .spawn()
+                    .map_err(|e| format!("Failed to open mintty: {}", e))?;
+            } else {
+                return Err("Git Bash not found. Please install Git for Windows: https://git-scm.com/download/win".to_string());
+            }
+        }
     } else {
         let script_path = vhome.join("_launch.sh");
         let script = format!(
