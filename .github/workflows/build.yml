@@ -1,0 +1,54 @@
+name: Build Windows Installer
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install frontend dependencies
+        run: npm install
+
+      - name: Prepare resources (bundle Node.js + Claude Code)
+        run: pwsh scripts/prepare-resources-win.ps1
+
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "Claude Code Launcher ${{ github.ref_name }}"
+          releaseBody: |
+            ## Claude Code Launcher
+
+            Download the .exe installer below. Node.js and Claude Code are bundled — no extra installation needed.
+
+            1. Install the .exe
+            2. Open the app, enter your API Key and Base URL
+            3. Choose a working directory
+            4. Click "Launch Claude Code"
+          releaseDraft: false
+          prerelease: false

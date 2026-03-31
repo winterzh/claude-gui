@@ -1,0 +1,126 @@
+use std::fs;
+use std::path::PathBuf;
+use std::process::Command;
+
+use crate::config;
+
+fn isolated_home() -> Result<PathBuf, String> {
+    let dir = dirs::home_dir()
+        .unwrap_or_default()
+        .join(".claude-launcher")
+        .join("home");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    fs::create_dir_all(dir.join(".claude")).ok();
+    Ok(dir)
+}
+
+/// Find bundled resources directory
+fn find_resources() -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
+
+    let candidates = [
+        exe_dir.join("resources"),
+        exe_dir.join("../Resources/resources"), // macOS .app bundle
+        exe_dir.join("../../resources"),         // dev: target/debug/
+        exe_dir.join("../../../src-tauri/resources"), // dev
+        PathBuf::from("src-tauri/resources"),    // CWD
+    ];
+
+    for c in &candidates {
+        if c.join("node").exists() && c.join("claude-code").exists() {
+            return Some(c.clone());
+        }
+    }
+    None
+}
+
+#[tauri::command]
+pub fn launch_claude_code() -> Result<(), String> {
+    let cfg = config::load_config()?.ok_or("No config found. Please configure first.")?;
+
+    let working_dir = if cfg.working_dir.is_empty() {
+        dirs::home_dir()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string()
+    } else {
+        cfg.working_dir.clone()
+    };
+
+    let vhome = isolated_home()?;
+    let vhome_str = vhome.to_string_lossy().to_string();
+    let resources = find_resources();
+
+    // Build the claude command depending on whether we have bundled resources
+    let claude_cmd = if let Some(ref res) = resources {
+        if cfg!(target_os = "windows") {
+            let node = res.join("node").join("node.exe");
+            let cli = res.join("claude-code").join("node_modules").join("@anthropic-ai").join("claude-code").join("cli.js");
+            format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
+        } else {
+            let node = res.join("node").join("bin").join("node");
+            let cli = res.join("claude-code").join("node_modules").join("@anthropic-ai").join("claude-code").join("cli.js");
+            format!("'{}' '{}'", node.to_string_lossy(), cli.to_string_lossy())
+        }
+    } else {
+        // Fallback: use system npx
+        "npx @anthropic-ai/claude-code".to_string()
+    };
+
+    if cfg!(target_os = "macos") {
+        let script_path = vhome.join("_launch.sh");
+        let script = format!(
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
+            vhome_str.replace("'", "'\\''"),
+            cfg.api_key.replace("'", "'\\''"),
+            cfg.base_url.replace("'", "'\\''"),
+            working_dir.replace("'", "'\\''"),
+            claude_cmd,
+        );
+        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
+        Command::new("chmod").args(["+x", &script_path.to_string_lossy()]).output().ok();
+        Command::new("open")
+            .args(["-a", "Terminal", &script_path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open Terminal: {}", e))?;
+    } else if cfg!(target_os = "windows") {
+        let bat_path = vhome.join("_launch.bat");
+        let bat = format!(
+            "@echo off\nset HOME={}\nset USERPROFILE={}\nset ANTHROPIC_API_KEY={}\nset ANTHROPIC_BASE_URL={}\ncd /d \"{}\"\n{}\n",
+            vhome_str, vhome_str, cfg.api_key, cfg.base_url, working_dir, claude_cmd,
+        );
+        fs::write(&bat_path, &bat).map_err(|e| e.to_string())?;
+        Command::new("cmd")
+            .args(["/c", "start", "cmd", "/k", &bat_path.to_string_lossy()])
+            .spawn()
+            .map_err(|e| format!("Failed to open cmd: {}", e))?;
+    } else {
+        let script_path = vhome.join("_launch.sh");
+        let script = format!(
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\n{}\n",
+            vhome_str.replace("'", "'\\''"),
+            cfg.api_key.replace("'", "'\\''"),
+            cfg.base_url.replace("'", "'\\''"),
+            working_dir.replace("'", "'\\''"),
+            claude_cmd,
+        );
+        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
+        Command::new("chmod").args(["+x", &script_path.to_string_lossy()]).output().ok();
+
+        let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
+        let mut launched = false;
+        for term in &terminals {
+            if Command::new(term).args(["-e", &script_path.to_string_lossy()]).spawn().is_ok() {
+                launched = true;
+                break;
+            }
+        }
+        if !launched {
+            return Err("No terminal emulator found".to_string());
+        }
+    }
+
+    Ok(())
+}
