@@ -15,7 +15,7 @@ fn isolated_home() -> Result<PathBuf, String> {
 }
 
 /// Find bundled resources directory
-fn find_resources() -> Option<PathBuf> {
+pub fn find_resources() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|p| p.to_path_buf()))?;
@@ -72,7 +72,7 @@ pub fn launch_claude_code() -> Result<(), String> {
     if cfg!(target_os = "macos") {
         let script_path = vhome.join("_launch.sh");
         let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport TERM=xterm-256color\nexport TERMINFO=/usr/share/terminfo\ncd '{}'\nclear\n{}\n",
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
             vhome_str.replace("'", "'\\''"),
             cfg.api_key.replace("'", "'\\''"),
             cfg.base_url.replace("'", "'\\''"),
@@ -88,7 +88,7 @@ pub fn launch_claude_code() -> Result<(), String> {
     } else if cfg!(target_os = "windows") {
         let script_path = vhome.join("_launch.sh");
         let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport USERPROFILE='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport TERM=xterm-256color\nif [ -d '/usr/share/terminfo' ]; then export TERMINFO=/usr/share/terminfo; fi\ncd '{}'\nclear\n{}\n",
+            "#!/bin/bash\nexport HOME='{}'\nexport USERPROFILE='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
             vhome_str.replace('\\', "/"),
             vhome_str.replace('\\', "/"),
             cfg.api_key,
@@ -119,7 +119,7 @@ pub fn launch_claude_code() -> Result<(), String> {
     } else {
         let script_path = vhome.join("_launch.sh");
         let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport TERM=xterm-256color\nexport TERMINFO=/usr/share/terminfo\ncd '{}'\n{}\n",
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\n{}\n",
             vhome_str.replace("'", "'\\''"),
             cfg.api_key.replace("'", "'\\''"),
             cfg.base_url.replace("'", "'\\''"),
