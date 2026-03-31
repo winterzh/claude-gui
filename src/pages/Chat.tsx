@@ -73,7 +73,17 @@ export default function Chat({ onSettings }: Props) {
     fitRef.current = fit;
     xterm.loadAddon(fit);
     xterm.open(termRef.current);
-    // Delay fit to ensure container is fully rendered
+
+    // Debounced fit — prevents rapid resize causing misaligned rows
+    let fitTimer: ReturnType<typeof setTimeout> | null = null;
+    const debouncedFit = () => {
+      if (fitTimer) clearTimeout(fitTimer);
+      fitTimer = setTimeout(() => {
+        try { fit.fit(); } catch { /* ignore */ }
+      }, 50);
+    };
+
+    // Initial fit after render
     requestAnimationFrame(() => { fit.fit(); xterm.focus(); });
 
     // User input → PTY
@@ -86,10 +96,9 @@ export default function Chat({ onSettings }: Props) {
       xterm.write(`\r\n\x1b[33m[Process exited with code ${e.payload}]\x1b[0m\r\n`);
     });
 
-    // Resize handler — both window and container
-    const onResize = () => fit.fit();
-    window.addEventListener("resize", onResize);
-    const resizeObs = new ResizeObserver(() => fit.fit());
+    // Resize handler — debounced, both window and container
+    window.addEventListener("resize", debouncedFit);
+    const resizeObs = new ResizeObserver(debouncedFit);
     resizeObs.observe(termRef.current);
 
     // Spawn Claude Code
@@ -98,7 +107,8 @@ export default function Chat({ onSettings }: Props) {
     });
 
     return () => {
-      window.removeEventListener("resize", onResize);
+      if (fitTimer) clearTimeout(fitTimer);
+      window.removeEventListener("resize", debouncedFit);
       resizeObs.disconnect();
       unOutput.then((f) => f());
       unExit.then((f) => f());
