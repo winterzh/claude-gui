@@ -4,10 +4,10 @@ A lightweight desktop app that makes Claude Code easy to use. No terminal knowle
 
 ## Features
 
-- **One-click launch** — Configure API Key and Base URL, choose a working directory, click to start
-- **Bundled Node.js** — Windows installer includes everything, no extra installation required
+- **Embedded terminal** — Claude Code runs inside the app with a built-in terminal (xterm.js)
+- **Zero dependencies** — Windows installer bundles Node.js, Git, and Claude Code. Nothing else to install
 - **Isolated environment** — Uses a separate config directory (`~/.claude-launcher/home/`), won't interfere with your existing Claude Code setup
-- **Cross-platform** — macOS (dev) + Windows (installer)
+- **Cross-platform** — Windows (installer) + macOS (dev)
 - **Dark / Light theme**
 - **Chinese / English**
 
@@ -21,7 +21,17 @@ Go to the [Releases](https://github.com/winterzh/claude-gui/releases) page and d
 2. Enter your **API Key** and **API Base URL** (proxy/relay endpoint)
 3. Choose a **working directory**
 4. Click **Launch Claude Code**
-5. A terminal window opens with Claude Code running — fully configured
+5. Claude Code runs in the embedded terminal — type and interact directly
+
+## What's bundled (Windows)
+
+| Component | Purpose |
+|-----------|---------|
+| Node.js v22 | Runtime for Claude Code |
+| MinGit | Git operations (diff, status, etc.) |
+| Claude Code | The CLI itself |
+
+Total installer size: ~100MB. No internet needed after install (except for API calls).
 
 ## Build from source
 
@@ -33,46 +43,55 @@ Go to the [Releases](https://github.com/winterzh/claude-gui/releases) page and d
 ### Development
 
 ```bash
-# Install dependencies
 npm install
-
-# Run in dev mode (macOS/Linux)
 npx tauri dev
 ```
 
 ### Build for Windows
 
-Push a version tag to trigger the GitHub Actions CI build:
+Push a version tag to trigger GitHub Actions CI:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.2.1
+git push origin v0.2.1
 ```
 
-The CI will:
-1. Download portable Node.js + Claude Code
-2. Bundle them into the app
-3. Build a Windows `.exe` installer
-4. Upload to GitHub Releases
+The CI downloads Node.js + MinGit + Claude Code, bundles everything into a Windows `.exe` installer, and uploads to GitHub Releases.
 
 ### Build locally (macOS)
 
 ```bash
-# Prepare bundled resources
 bash scripts/prepare-resources.sh
-
-# Build
 npx tauri build
 ```
 
-## How it works
+## Architecture
 
-The launcher is a thin Tauri (Rust + React) wrapper that:
+```
+┌─────────────────────────────┐
+│  Tauri App (Rust + React)   │
+│  ┌───────────────────────┐  │
+│  │  Settings Page        │  │
+│  │  API Key + Base URL   │  │
+│  └───────────────────────┘  │
+│  ┌───────────────────────┐  │
+│  │  Embedded Terminal    │  │
+│  │  xterm.js + PTY      │  │
+│  │  ┌─────────────────┐  │  │
+│  │  │  Claude Code    │  │  │
+│  │  │  (bundled)      │  │  │
+│  │  └─────────────────┘  │  │
+│  └───────────────────────┘  │
+└─────────────────────────────┘
+         │
+         ▼ Isolated
+  ~/.claude-launcher/home/.claude/
+  (separate from ~/.claude/)
+```
 
-1. Stores your API config in `~/.config/claude-launcher/config.json`
-2. Creates an isolated home directory at `~/.claude-launcher/home/`
-3. Launches Claude Code in a terminal with the right environment variables set (`ANTHROPIC_API_KEY`, `ANTHROPIC_BASE_URL`, `HOME`)
-4. Your real `~/.claude/` is never touched
+- Config stored in `~/.config/claude-launcher/config.json`
+- Claude Code runs with `HOME` set to `~/.claude-launcher/home/`
+- Your real `~/.claude/` is never touched
 
 ## License
 

@@ -73,8 +73,8 @@ export default function Chat({ onSettings }: Props) {
     fitRef.current = fit;
     xterm.loadAddon(fit);
     xterm.open(termRef.current);
-    fit.fit();
-    xterm.focus();
+    // Delay fit to ensure container is fully rendered
+    requestAnimationFrame(() => { fit.fit(); xterm.focus(); });
 
     // User input → PTY
     xterm.onData((data) => invoke("pty_write", { data }));
@@ -86,9 +86,11 @@ export default function Chat({ onSettings }: Props) {
       xterm.write(`\r\n\x1b[33m[Process exited with code ${e.payload}]\x1b[0m\r\n`);
     });
 
-    // Resize handler
+    // Resize handler — both window and container
     const onResize = () => fit.fit();
     window.addEventListener("resize", onResize);
+    const resizeObs = new ResizeObserver(() => fit.fit());
+    resizeObs.observe(termRef.current);
 
     // Spawn Claude Code
     invoke("spawn_claude").catch((e) => {
@@ -97,6 +99,7 @@ export default function Chat({ onSettings }: Props) {
 
     return () => {
       window.removeEventListener("resize", onResize);
+      resizeObs.disconnect();
       unOutput.then((f) => f());
       unExit.then((f) => f());
       invoke("kill_claude").catch(() => {});
@@ -141,7 +144,7 @@ export default function Chat({ onSettings }: Props) {
             {lang === "zh" ? "重启" : "Restart"}
           </button>
         </div>
-        <div ref={termRef} style={{ flex: 1, background: isDark ? "#0f0f23" : "#ffffff" }} />
+        <div ref={termRef} style={{ flex: 1, overflow: "hidden", background: isDark ? "#0f0f23" : "#ffffff" }} />
       </div>
     );
   }
