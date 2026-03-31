@@ -98,35 +98,23 @@ pub fn launch_claude_code() -> Result<(), String> {
         );
         fs::write(&script_path, &script).map_err(|e| e.to_string())?;
 
-        // Find Git Bash
-        let git_bash_paths = [
-            r"C:\Program Files\Git\git-bash.exe",
-            r"C:\Program Files (x86)\Git\git-bash.exe",
+        // Find bash.exe from Git for Windows
+        let bash_paths = [
+            r"C:\Program Files\Git\bin\bash.exe",
+            r"C:\Program Files (x86)\Git\bin\bash.exe",
+            r"C:\Git\bin\bash.exe",
         ];
-        let git_bash = git_bash_paths.iter().find(|p| std::path::Path::new(p).exists());
+        let bash = bash_paths.iter().find(|p| std::path::Path::new(p).exists());
 
-        if let Some(bash) = git_bash {
-            Command::new(bash)
-                .args(["--cd", &working_dir, "-l", "-i", &script_path.to_string_lossy()])
+        if let Some(bash_exe) = bash {
+            // Open a new cmd window that runs bash with our script
+            let script_unix = script_path.to_string_lossy().replace('\\', "/");
+            Command::new("cmd")
+                .args(["/c", "start", "", bash_exe, "--login", &script_unix])
                 .spawn()
                 .map_err(|e| format!("Failed to open Git Bash: {}", e))?;
         } else {
-            // Fallback: try mintty (Git for Windows terminal)
-            let mintty_paths = [
-                r"C:\Program Files\Git\usr\bin\mintty.exe",
-                r"C:\Program Files (x86)\Git\usr\bin\mintty.exe",
-            ];
-            let mintty = mintty_paths.iter().find(|p| std::path::Path::new(p).exists());
-
-            if let Some(m) = mintty {
-                let bash_exe = r"C:\Program Files\Git\bin\bash.exe";
-                Command::new(m)
-                    .args(["-t", "Claude Code", "-e", bash_exe, "--login", "-i", &script_path.to_string_lossy()])
-                    .spawn()
-                    .map_err(|e| format!("Failed to open mintty: {}", e))?;
-            } else {
-                return Err("Git Bash not found. Please install Git for Windows: https://git-scm.com/download/win".to_string());
-            }
+            return Err("Git Bash not found. Please install Git for Windows: https://git-scm.com/download/win".to_string());
         }
     } else {
         let script_path = vhome.join("_launch.sh");

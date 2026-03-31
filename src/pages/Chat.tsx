@@ -10,6 +10,7 @@ export default function Chat({ onSettings }: Props) {
   const { theme: T, isDark, toggleTheme, lang } = useApp();
   const [workingDir, setWorkingDir] = useState("");
   const [running, setRunning] = useState(false);
+  const [error, setError] = useState("");
   const [showDirPrompt, setShowDirPrompt] = useState(false);
 
   useEffect(() => {
@@ -35,10 +36,11 @@ export default function Chat({ onSettings }: Props) {
 
   const launchClaude = async () => {
     setRunning(true);
+    setError("");
     try {
       await invoke("launch_claude_code");
     } catch (e) {
-      console.error(e);
+      setError(String(e));
     }
     setRunning(false);
   };
@@ -92,6 +94,8 @@ export default function Chat({ onSettings }: Props) {
             ? (lang === "zh" ? "Claude Code 运行中..." : "Claude Code Running...")
             : (lang === "zh" ? "启动 Claude Code" : "Launch Claude Code")}
         </button>
+
+        {error && <p style={{ color: T.error, fontSize: 13, marginTop: 8, textAlign: "center", wordBreak: "break-word" }}>{error}</p>}
       </div>
 
       {/* Bottom buttons */}
