@@ -30,7 +30,8 @@ Copy-Item "$NodeDir\npm.cmd" "$ResourceDir\node\npm.cmd"
 Remove-Item -Recurse -Force "$ResourceDir\node-tmp", $Archive
 
 # --- MinGit ---
-$GitUrl = "https://github.com/git-for-windows/git/releases/download/${MinGitTag}/MinGit-${GitVersion}-64-bit.zip"
+# Use MinGit with busybox — includes bash.exe which Claude Code requires
+$GitUrl = "https://github.com/git-for-windows/git/releases/download/${MinGitTag}/MinGit-${GitVersion}-busybox-64-bit.zip"
 $GitArchive = "$ResourceDir\mingit.zip"
 
 Write-Host "--- Downloading MinGit $GitVersion ---"
@@ -53,4 +54,9 @@ Pop-Location
 Write-Host "=== Resources ready ==="
 Write-Host "Node: $(Get-ChildItem $ResourceDir\node\node.exe)"
 Write-Host "Git: $(Get-ChildItem $ResourceDir\git\cmd\git.exe)"
+# Check for bash.exe in various locations
+$bashPaths = @("$ResourceDir\git\bin\bash.exe", "$ResourceDir\git\usr\bin\bash.exe", "$ResourceDir\git\mingw64\bin\bash.exe")
+foreach ($bp in $bashPaths) {
+    if (Test-Path $bp) { Write-Host "Bash: $bp"; break }
+}
 Write-Host "Claude Code: $(Get-ChildItem $ResourceDir\claude-code\node_modules\@anthropic-ai\claude-code\cli.js)"
