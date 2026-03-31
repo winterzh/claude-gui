@@ -13,10 +13,10 @@ jobs:
   build-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "22"
 
@@ -34,10 +34,16 @@ jobs:
       - name: Prepare resources (bundle Node.js + Claude Code)
         run: pwsh scripts/prepare-resources-win.ps1
 
+      - name: Verify resources
+        run: |
+          dir src-tauri\resources\node\
+          dir src-tauri\resources\claude-code\node_modules\@anthropic-ai\claude-code\cli.js
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CI: true
         with:
           tagName: ${{ github.ref_name }}
           releaseName: "Claude Code Launcher ${{ github.ref_name }}"
