@@ -90,6 +90,23 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     cmd.env("TERM", "xterm-256color");
     cmd.cwd(&working_dir);
 
+    // Add bundled git and node to PATH so Claude Code can use them
+    let mut extra_path = String::new();
+    if let Some(ref res) = resources {
+        if cfg!(target_os = "windows") {
+            let git_cmd = res.join("git").join("cmd");
+            let git_bin = res.join("git").join("usr").join("bin");
+            let node_dir = res.join("node");
+            if git_cmd.exists() {
+                extra_path = format!("{};{};{}", git_cmd.to_string_lossy(), git_bin.to_string_lossy(), node_dir.to_string_lossy());
+            }
+        }
+    }
+    if !extra_path.is_empty() {
+        let sys_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env("PATH", format!("{};{}", extra_path, sys_path));
+    }
+
     if cfg!(target_os = "windows") {
         cmd.env("USERPROFILE", &vhome);
     }
