@@ -31,11 +31,10 @@ fn isolated_home() -> PathBuf {
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
 
-    // Pre-create .claude.json to skip onboarding
+    // Always write .claude.json to skip onboarding — without this,
+    // Claude Code ignores ANTHROPIC_BASE_URL and tries its own login flow
     let claude_json = dir.join(".claude.json");
-    if !claude_json.exists() {
-        fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
-    }
+    fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
 
     dir
 }
