@@ -163,8 +163,50 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
+    // Build the command - on Windows spawn node.exe directly, on Unix use wrapper script
     let mut cmd = if cfg!(target_os = "windows") {
-        let c = CommandBuilder::new("cmd.exe");
+        let (node_exe, cli_js) = if let Some(ref res) = resources {
+            let n = res.join("node").join("node.exe");
+            let c = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if n.exists() && c.exists() { (n, c) } else {
+                return Err("Bundled node.exe or claude-code not found in resources".to_string());
+            }
+        } else {
+            return Err("Resources directory not found".to_string());
+        };
+
+        let mut c = CommandBuilder::new(&node_exe);
+        c.arg(&cli_js);
+
+        // Set ALL env vars directly on the process
+        c.env("HOME", &vhome_str);
+        c.env("USERPROFILE", &vhome_str);
+        c.env("ANTHROPIC_API_KEY", &cfg.api_key);
+        c.env("ANTHROPIC_BASE_URL", &cfg.base_url);
+        c.env("FORCE_COLOR", "1");
+        c.env("TERM", "xterm-256color");
+
+        // Add bundled git and node to PATH
+        if let Some(ref res) = resources {
+            let mut extra: Vec<String> = Vec::new();
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+                let p = res.join(sub);
+                if p.exists() { extra.push(p.to_string_lossy().to_string()); }
+            }
+            let sys_path = std::env::var("PATH").unwrap_or_default();
+            extra.push(sys_path);
+            c.env("PATH", extra.join(";"));
+
+            // bash.exe for Claude Code
+            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
+                let p = res.join(sub);
+                if p.exists() {
+                    c.env("CLAUDE_CODE_GIT_BASH_PATH", p.to_string_lossy().to_string());
+                    break;
+                }
+            }
+        }
         c
     } else {
         let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
@@ -177,65 +219,8 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
 
-    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-
-    // On Windows: type env var commands + launch command into the PTY
-    if cfg!(target_os = "windows") {
-        // Small delay to let cmd.exe start
-        thread::sleep(std::time::Duration::from_millis(500));
-
-        let claude_cmd = if let Some(ref res) = resources {
-            let node = res.join("node").join("node.exe");
-            let cli = res.join("claude-code").join("node_modules")
-                .join("@anthropic-ai").join("claude-code").join("cli.js");
-            if node.exists() && cli.exists() {
-                format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
-            } else {
-                "npx @anthropic-ai/claude-code".to_string()
-            }
-        } else {
-            "npx @anthropic-ai/claude-code".to_string()
-        };
-
-        // Build commands to type into cmd
-        let mut cmds: Vec<String> = Vec::new();
-        cmds.push(format!("set \"HOME={}\"", vhome_str));
-        cmds.push(format!("set \"USERPROFILE={}\"", vhome_str));
-        cmds.push(format!("set \"ANTHROPIC_API_KEY={}\"", cfg.api_key));
-        cmds.push(format!("set \"ANTHROPIC_BASE_URL={}\"", cfg.base_url));
-        cmds.push("set \"FORCE_COLOR=1\"".to_string());
-        cmds.push("set \"TERM=xterm-256color\"".to_string());
-
-        // PATH with bundled resources
-        if let Some(ref res) = resources {
-            let mut extra: Vec<String> = Vec::new();
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
-                let p = res.join(sub);
-                if p.exists() { extra.push(p.to_string_lossy().to_string()); }
-            }
-            if !extra.is_empty() {
-                cmds.push(format!("set \"PATH={};%PATH%\"", extra.join(";")));
-            }
-            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
-                let p = res.join(sub);
-                if p.exists() {
-                    cmds.push(format!("set \"CLAUDE_CODE_GIT_BASH_PATH={}\"", p.to_string_lossy()));
-                    break;
-                }
-            }
-        }
-
-        cmds.push(format!("cd /d \"{}\"", working_dir));
-        cmds.push("cls".to_string());
-        cmds.push(claude_cmd);
-
-        // Type each command followed by Enter
-        for c in &cmds {
-            writer.write_all(format!("{}\r\n", c).as_bytes()).ok();
-        }
-        writer.flush().ok();
-    }
 
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
