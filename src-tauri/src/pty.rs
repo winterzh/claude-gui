@@ -163,75 +163,64 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
-    // WORKAROUND: portable-pty's CommandBuilder::env() is broken on Windows.
-    // Instead, set env vars on the CURRENT process before spawning.
-    // The child inherits them via OS-level process environment inheritance.
-    // Save originals so we can restore after spawn.
-    let env_vars_to_set: Vec<(&str, String)> = vec![
-        ("HOME", vhome_str.clone()),
-        ("USERPROFILE", vhome_str.clone()),
-        ("ANTHROPIC_API_KEY", cfg.api_key.clone()),
-        ("ANTHROPIC_BASE_URL", cfg.base_url.clone()),
-        ("FORCE_COLOR", "1".to_string()),
-        ("TERM", "xterm-256color".to_string()),
-    ];
-
-    // Save originals
-    let saved_env: Vec<(String, Option<String>)> = env_vars_to_set
-        .iter()
-        .map(|(k, _)| (k.to_string(), std::env::var(k).ok()))
-        .collect();
-
-    // Set on current process
-    for (k, v) in &env_vars_to_set {
-        std::env::set_var(k, v);
-    }
-
-    // Handle PATH and CLAUDE_CODE_GIT_BASH_PATH for bundled resources
-    let saved_path = std::env::var("PATH").ok();
-    let saved_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH").ok();
-
-    if let Some(ref res) = resources {
-        if cfg!(target_os = "windows") {
-            let mut extra: Vec<String> = Vec::new();
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
-                let p = res.join(sub);
-                if p.exists() { extra.push(p.to_string_lossy().to_string()); }
-            }
-            let sys_path = std::env::var("PATH").unwrap_or_default();
-            extra.push(sys_path);
-            std::env::set_var("PATH", extra.join(";"));
-
-            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
-                let p = res.join(sub);
-                if p.exists() {
-                    std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", p.to_string_lossy().to_string());
-                    break;
-                }
-            }
-        }
-    }
-
-    // Build the command
+    // On Windows: write a Node.js wrapper that sets process.env then runs Claude Code.
+    // This bypasses all OS/PTY env var issues entirely.
     let mut cmd = if cfg!(target_os = "windows") {
-        if let Some(ref res) = resources {
-            let node = res.join("node").join("node.exe");
-            let cli = res.join("claude-code").join("node_modules")
-                .join("@anthropic-ai").join("claude-code").join("cli.js");
-            if node.exists() && cli.exists() {
-                let mut c = CommandBuilder::new(&node);
-                c.arg(&cli);
-                c
-            } else {
-                let mut c = CommandBuilder::new("cmd.exe");
-                c.args(["/c", "npx @anthropic-ai/claude-code"]);
-                c
-            }
-        } else {
-            let mut c = CommandBuilder::new("cmd.exe");
-            c.args(["/c", "npx @anthropic-ai/claude-code"]);
-            c
+        let res = resources.as_ref().ok_or("Resources directory not found")?;
+        let node = res.join("node").join("node.exe");
+        let cli = res.join("claude-code").join("node_modules")
+            .join("@anthropic-ai").join("claude-code").join("cli.js");
+
+        if !node.exists() { return Err(format!("node.exe not found at {}", node.display())); }
+        if !cli.exists() { return Err(format!("cli.js not found at {}", cli.display())); }
+
+        // Build PATH with bundled git/node
+        let mut extra_paths: Vec<String> = Vec::new();
+        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+            let p = res.join(sub);
+            if p.exists() { extra_paths.push(p.to_string_lossy().to_string().replace('\\', "/")); }
         }
+        let sys_path = std::env::var("PATH").unwrap_or_default().replace('\\', "/");
+        extra_paths.push(sys_path);
+        let full_path = extra_paths.join(";");
+
+        // Find bash.exe
+        let mut bash_path = String::new();
+        for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
+            let p = res.join(sub);
+            if p.exists() { bash_path = p.to_string_lossy().to_string().replace('\\', "/"); break; }
+        }
+
+        // Write a JS wrapper that sets env vars at Node.js level, then requires Claude Code
+        let wrapper_path = vhome.join("_wrapper.js");
+        let cli_path_escaped = cli.to_string_lossy().replace('\\', "\\\\");
+        let wrapper_js = format!(
+            r#"process.env.HOME = {home};
+process.env.USERPROFILE = {home};
+process.env.ANTHROPIC_API_KEY = {key};
+process.env.ANTHROPIC_BASE_URL = {url};
+process.env.FORCE_COLOR = "1";
+process.env.TERM = "xterm-256color";
+process.env.PATH = {path};
+{bash_env}
+process.chdir({cwd});
+require("{cli}");
+"#,
+            home = serde_json::to_string(&vhome_str).unwrap(),
+            key = serde_json::to_string(&cfg.api_key).unwrap(),
+            url = serde_json::to_string(&cfg.base_url).unwrap(),
+            path = serde_json::to_string(&full_path).unwrap(),
+            bash_env = if bash_path.is_empty() { String::new() } else {
+                format!("process.env.CLAUDE_CODE_GIT_BASH_PATH = {};", serde_json::to_string(&bash_path).unwrap())
+            },
+            cwd = serde_json::to_string(&working_dir.replace('\\', "/")).unwrap(),
+            cli = cli_path_escaped,
+        );
+        fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
+
+        let mut c = CommandBuilder::new(&node);
+        c.arg(&wrapper_path);
+        c
     } else {
         let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
         let mut c = CommandBuilder::new("bash");
@@ -242,22 +231,6 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
-
-    // RESTORE original env vars on the Tauri process
-    for (k, orig) in &saved_env {
-        match orig {
-            Some(v) => std::env::set_var(k, v),
-            None => std::env::remove_var(k),
-        }
-    }
-    match saved_path {
-        Some(v) => std::env::set_var("PATH", v),
-        None => {}
-    }
-    match saved_bash_path {
-        Some(v) => std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", v),
-        None => std::env::remove_var("CLAUDE_CODE_GIT_BASH_PATH"),
-    }
 
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
