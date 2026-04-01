@@ -1,10 +1,9 @@
-# Download portable Node.js + MinGit + Claude Code for bundling
+# Download portable Node.js + PortableGit + Claude Code for bundling
 $ErrorActionPreference = "Stop"
 
 $ResourceDir = Join-Path $PSScriptRoot "..\src-tauri\resources"
 $NodeVersion = "v22.14.0"
 $GitVersion = "2.49.0"
-$MinGitTag = "v${GitVersion}.windows.1"
 
 Write-Host "=== Preparing resources ==="
 
@@ -29,17 +28,27 @@ Copy-Item "$NodeDir\npx.cmd" "$ResourceDir\node\npx.cmd"
 Copy-Item "$NodeDir\npm.cmd" "$ResourceDir\node\npm.cmd"
 Remove-Item -Recurse -Force "$ResourceDir\node-tmp", $Archive
 
-# --- MinGit ---
-# Use MinGit with busybox — includes bash.exe which Claude Code requires
-$GitUrl = "https://github.com/git-for-windows/git/releases/download/${MinGitTag}/MinGit-${GitVersion}-busybox-64-bit.zip"
-$GitArchive = "$ResourceDir\mingit.zip"
+# --- PortableGit (includes bash.exe) ---
+$GitUrl = "https://github.com/git-for-windows/git/releases/download/v${GitVersion}.windows.1/PortableGit-${GitVersion}-64-bit.7z.exe"
+$GitExe = "$ResourceDir\portablegit.exe"
 
-Write-Host "--- Downloading MinGit $GitVersion ---"
-Invoke-WebRequest -Uri $GitUrl -OutFile $GitArchive
+Write-Host "--- Downloading PortableGit $GitVersion ---"
+Invoke-WebRequest -Uri $GitUrl -OutFile $GitExe
 
-Write-Host "--- Extracting MinGit ---"
-Expand-Archive -Path $GitArchive -DestinationPath "$ResourceDir\git" -Force
-Remove-Item -Force $GitArchive
+Write-Host "--- Extracting PortableGit ---"
+# PortableGit is a self-extracting 7z archive, use -o to specify output dir, -y to auto-confirm
+Start-Process -FilePath $GitExe -ArgumentList "-o`"$ResourceDir\git`"", "-y" -Wait -NoNewWindow
+Remove-Item -Force $GitExe
+
+# Verify bash.exe exists
+$bashPath = "$ResourceDir\git\bin\bash.exe"
+if (Test-Path $bashPath) {
+    Write-Host "bash.exe found: $bashPath"
+} else {
+    Write-Host "WARNING: bash.exe not found at $bashPath"
+    # List what we have
+    Get-ChildItem -Recurse "$ResourceDir\git\bin" -ErrorAction SilentlyContinue | Select-Object -First 20
+}
 
 # --- Claude Code ---
 Write-Host "--- Installing @anthropic-ai/claude-code ---"
@@ -54,9 +63,5 @@ Pop-Location
 Write-Host "=== Resources ready ==="
 Write-Host "Node: $(Get-ChildItem $ResourceDir\node\node.exe)"
 Write-Host "Git: $(Get-ChildItem $ResourceDir\git\cmd\git.exe)"
-# Check for bash.exe in various locations
-$bashPaths = @("$ResourceDir\git\bin\bash.exe", "$ResourceDir\git\usr\bin\bash.exe", "$ResourceDir\git\mingw64\bin\bash.exe")
-foreach ($bp in $bashPaths) {
-    if (Test-Path $bp) { Write-Host "Bash: $bp"; break }
-}
+Write-Host "Bash: $(Get-ChildItem $ResourceDir\git\bin\bash.exe -ErrorAction SilentlyContinue)"
 Write-Host "Claude Code: $(Get-ChildItem $ResourceDir\claude-code\node_modules\@anthropic-ai\claude-code\cli.js)"
