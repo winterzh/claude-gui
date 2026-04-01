@@ -4,9 +4,10 @@ A lightweight desktop app that makes Claude Code easy to use. No terminal knowle
 
 ## Features
 
-- **Embedded terminal** — Claude Code runs inside the app with a built-in terminal (xterm.js)
+- **Embedded terminal** — Claude Code runs inside the app with a built-in terminal (xterm.js + PTY)
 - **Zero dependencies** — Windows installer bundles Node.js, Git, and Claude Code. Nothing else to install
 - **Isolated environment** — Uses a separate config directory (`~/.claude-launcher/home/`), won't interfere with your existing Claude Code setup
+- **Auto-skip onboarding** — Automatically creates `.claude.json` with `hasCompletedOnboarding: true` so Claude Code uses your API key directly
 - **Cross-platform** — Windows (installer) + macOS (dev)
 - **Dark / Light theme**
 - **Chinese / English**
@@ -25,13 +26,43 @@ Go to the [Releases](https://github.com/winterzh/claude-gui/releases) page and d
 
 ## What's bundled (Windows)
 
-| Component | Purpose |
-|-----------|---------|
-| Node.js v22 | Runtime for Claude Code |
-| MinGit | Git operations (diff, status, etc.) |
-| Claude Code | The CLI itself |
+| Component | Size | Purpose |
+|-----------|------|---------|
+| Node.js v22 | ~30MB | Runtime for Claude Code |
+| PortableGit | ~50MB | Git operations + bash.exe |
+| Claude Code | ~20MB | The CLI itself |
 
 Total installer size: ~100MB. No internet needed after install (except for API calls).
+
+## How it works
+
+```
+┌─────────────────────────────────┐
+│  Tauri App (Rust + React)       │
+│  ┌───────────────────────────┐  │
+│  │  Settings Page            │  │
+│  │  API Key + Base URL       │  │
+│  └───────────────────────────┘  │
+│  ┌───────────────────────────┐  │
+│  │  Embedded Terminal        │  │
+│  │  xterm.js + PTY           │  │
+│  │  ┌─────────────────────┐  │  │
+│  │  │  _wrapper.js        │  │  │
+│  │  │  sets process.env   │  │  │
+│  │  │  spawns Claude Code │  │  │
+│  │  └─────────────────────┘  │  │
+│  └───────────────────────────┘  │
+└─────────────────────────────────┘
+```
+
+**Environment isolation:**
+- Config stored in `~/.config/claude-launcher/config.json` (or `%APPDATA%` on Windows)
+- Claude Code runs with `HOME`/`USERPROFILE` set to `~/.claude-launcher/home/`
+- `.claude.json` auto-created with `hasCompletedOnboarding: true` to skip login flow
+- Your real `~/.claude/` is never touched
+
+**Windows env var workaround:**
+portable-pty cannot pass environment variables on Windows ConPTY. The app generates a `_wrapper.js` that uses `child_process.spawn()` with an explicit `env` block to launch Claude Code with the correct `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`.
 
 ## Build from source
 
@@ -52,11 +83,11 @@ npx tauri dev
 Push a version tag to trigger GitHub Actions CI:
 
 ```bash
-git tag v0.2.1
-git push origin v0.2.1
+git tag v0.3.7
+git push origin v0.3.7
 ```
 
-The CI downloads Node.js + MinGit + Claude Code, bundles everything into a Windows `.exe` installer, and uploads to GitHub Releases.
+The CI downloads Node.js + PortableGit + Claude Code, bundles everything into a Windows `.exe` installer, and uploads to GitHub Releases.
 
 ### Build locally (macOS)
 
@@ -65,33 +96,17 @@ bash scripts/prepare-resources.sh
 npx tauri build
 ```
 
-## Architecture
+## Troubleshooting
 
-```
-┌─────────────────────────────┐
-│  Tauri App (Rust + React)   │
-│  ┌───────────────────────┐  │
-│  │  Settings Page        │  │
-│  │  API Key + Base URL   │  │
-│  └───────────────────────┘  │
-│  ┌───────────────────────┐  │
-│  │  Embedded Terminal    │  │
-│  │  xterm.js + PTY      │  │
-│  │  ┌─────────────────┐  │  │
-│  │  │  Claude Code    │  │  │
-│  │  │  (bundled)      │  │  │
-│  │  └─────────────────┘  │  │
-│  └───────────────────────┘  │
-└─────────────────────────────┘
-         │
-         ▼ Isolated
-  ~/.claude-launcher/home/.claude/
-  (separate from ~/.claude/)
-```
+**Claude Code says "Unable to connect to Anthropic services"**
+- Make sure you entered the correct API Base URL in Settings
+- The app auto-creates `.claude.json` with `hasCompletedOnboarding: true`. If it's missing, Claude Code ignores your Base URL and tries its own login flow
 
-- Config stored in `~/.config/claude-launcher/config.json`
-- Claude Code runs with `HOME` set to `~/.claude-launcher/home/`
-- Your real `~/.claude/` is never touched
+**Terminal display issues on resize**
+- The terminal uses debounced resize. Slight delay is normal when resizing the window
+
+**Windows: "CLAUDE_CODE_GIT_BASH_PATH" errors**
+- The app bundles PortableGit and adds `git/bin` to PATH. If you still see this error, uninstall, delete `%LOCALAPPDATA%\Claude Code Launcher`, and reinstall the latest version
 
 ## License
 
