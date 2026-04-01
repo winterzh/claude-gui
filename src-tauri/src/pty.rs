@@ -163,15 +163,11 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
-    // Write a .bat/.sh launch script — most reliable way to set env vars
-    let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
-
     let mut cmd = if cfg!(target_os = "windows") {
-        // Spawn cmd.exe interactively, it will run the .bat
-        let mut c = CommandBuilder::new("cmd.exe");
-        c.args(["/k", &script_path.to_string_lossy()]);
+        let c = CommandBuilder::new("cmd.exe");
         c
     } else {
+        let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
         let mut c = CommandBuilder::new("bash");
         c.arg(&script_path);
         c
@@ -181,8 +177,65 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
 
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
+
+    // On Windows: type env var commands + launch command into the PTY
+    if cfg!(target_os = "windows") {
+        // Small delay to let cmd.exe start
+        thread::sleep(std::time::Duration::from_millis(500));
+
+        let claude_cmd = if let Some(ref res) = resources {
+            let node = res.join("node").join("node.exe");
+            let cli = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if node.exists() && cli.exists() {
+                format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
+            } else {
+                "npx @anthropic-ai/claude-code".to_string()
+            }
+        } else {
+            "npx @anthropic-ai/claude-code".to_string()
+        };
+
+        // Build commands to type into cmd
+        let mut cmds: Vec<String> = Vec::new();
+        cmds.push(format!("set \"HOME={}\"", vhome_str));
+        cmds.push(format!("set \"USERPROFILE={}\"", vhome_str));
+        cmds.push(format!("set \"ANTHROPIC_API_KEY={}\"", cfg.api_key));
+        cmds.push(format!("set \"ANTHROPIC_BASE_URL={}\"", cfg.base_url));
+        cmds.push("set \"FORCE_COLOR=1\"".to_string());
+        cmds.push("set \"TERM=xterm-256color\"".to_string());
+
+        // PATH with bundled resources
+        if let Some(ref res) = resources {
+            let mut extra: Vec<String> = Vec::new();
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+                let p = res.join(sub);
+                if p.exists() { extra.push(p.to_string_lossy().to_string()); }
+            }
+            if !extra.is_empty() {
+                cmds.push(format!("set \"PATH={};%PATH%\"", extra.join(";")));
+            }
+            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
+                let p = res.join(sub);
+                if p.exists() {
+                    cmds.push(format!("set \"CLAUDE_CODE_GIT_BASH_PATH={}\"", p.to_string_lossy()));
+                    break;
+                }
+            }
+        }
+
+        cmds.push(format!("cd /d \"{}\"", working_dir));
+        cmds.push("cls".to_string());
+        cmds.push(claude_cmd);
+
+        // Type each command followed by Enter
+        for c in &cmds {
+            writer.write_all(format!("{}\r\n", c).as_bytes()).ok();
+        }
+        writer.flush().ok();
+    }
 
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
