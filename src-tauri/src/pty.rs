@@ -83,14 +83,6 @@ fn build_launch_script(
             if !extra.is_empty() {
                 lines.push(format!("set \"PATH={};%PATH%\"", extra.join(";")));
             }
-            // Find bash.exe
-            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
-                let p = res.join(sub);
-                if p.exists() {
-                    lines.push(format!("set \"CLAUDE_CODE_GIT_BASH_PATH={}\"", p.to_string_lossy()));
-                    break;
-                }
-            }
         }
 
         lines.push(format!("cd /d \"{}\"", working_dir));
@@ -184,21 +176,20 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         extra_paths.push(sys_path);
         let full_path = extra_paths.join(";");
 
-        // Don't set CLAUDE_CODE_GIT_BASH_PATH - let Claude Code find bash from PATH
-        let bash_path = String::new();
-
         // Write a JS wrapper that sets env vars at Node.js level, then requires Claude Code
         let wrapper_path = vhome.join("_wrapper.js");
         let cli_path_escaped = cli.to_string_lossy().replace('\\', "\\\\");
         let wrapper_js = format!(
-            r#"process.env.HOME = {home};
+            r#"// Force-clear any stale env
+delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
+// Set required env vars
+process.env.HOME = {home};
 process.env.USERPROFILE = {home};
 process.env.ANTHROPIC_API_KEY = {key};
 process.env.ANTHROPIC_BASE_URL = {url};
 process.env.FORCE_COLOR = "1";
 process.env.TERM = "xterm-256color";
 process.env.PATH = {path};
-{bash_env}
 process.chdir({cwd});
 require("{cli}");
 "#,
@@ -206,9 +197,6 @@ require("{cli}");
             key = serde_json::to_string(&cfg.api_key).unwrap(),
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
-            bash_env = if bash_path.is_empty() { String::new() } else {
-                format!("process.env.CLAUDE_CODE_GIT_BASH_PATH = {};", serde_json::to_string(&bash_path).unwrap())
-            },
             cwd = serde_json::to_string(&working_dir.replace('\\', "/")).unwrap(),
             cli = cli_path_escaped,
         );
