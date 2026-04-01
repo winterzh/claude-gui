@@ -184,12 +184,8 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         extra_paths.push(sys_path);
         let full_path = extra_paths.join(";");
 
-        // Find bash.exe
-        let mut bash_path = String::new();
-        for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
-            let p = res.join(sub);
-            if p.exists() { bash_path = p.to_string_lossy().to_string().replace('\\', "/"); break; }
-        }
+        // Don't set CLAUDE_CODE_GIT_BASH_PATH - let Claude Code find bash from PATH
+        let bash_path = String::new();
 
         // Write a JS wrapper that sets env vars at Node.js level, then requires Claude Code
         let wrapper_path = vhome.join("_wrapper.js");
