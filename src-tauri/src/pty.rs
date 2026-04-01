@@ -2,6 +2,8 @@ use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::io::{Read, Write};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::fs;
+use std::path::PathBuf;
 use tauri::{AppHandle, Emitter};
 
 use crate::config;
@@ -21,14 +23,115 @@ impl PtyState {
 
 pub type SharedPtyState = Arc<Mutex<PtyState>>;
 
-fn isolated_home() -> String {
+fn isolated_home() -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".claude-launcher")
         .join("home");
-    std::fs::create_dir_all(&dir).ok();
-    std::fs::create_dir_all(dir.join(".claude")).ok();
-    dir.to_string_lossy().to_string()
+    fs::create_dir_all(&dir).ok();
+    fs::create_dir_all(dir.join(".claude")).ok();
+    dir
+}
+
+/// Build a wrapper script that sets env vars then launches Claude Code.
+/// This is more reliable than CommandBuilder::env() on Windows.
+fn build_launch_script(
+    cfg: &config::AppConfig,
+    vhome: &str,
+    working_dir: &str,
+    resources: &Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    let home_dir = isolated_home();
+
+    if cfg!(target_os = "windows") {
+        let script_path = home_dir.join("_pty_launch.bat");
+
+        // Determine claude command
+        let claude_cmd = if let Some(ref res) = resources {
+            let node = res.join("node").join("node.exe");
+            let cli = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if node.exists() && cli.exists() {
+                format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
+            } else {
+                "npx @anthropic-ai/claude-code".to_string()
+            }
+        } else {
+            "npx @anthropic-ai/claude-code".to_string()
+        };
+
+        // Build PATH additions
+        let mut extra_paths = Vec::new();
+        if let Some(ref res) = resources {
+            let git_cmd = res.join("git").join("cmd");
+            let git_usr_bin = res.join("git").join("usr").join("bin");
+            let node_dir = res.join("node");
+            if git_cmd.exists() { extra_paths.push(git_cmd.to_string_lossy().to_string()); }
+            if git_usr_bin.exists() { extra_paths.push(git_usr_bin.to_string_lossy().to_string()); }
+            if node_dir.exists() { extra_paths.push(node_dir.to_string_lossy().to_string()); }
+        }
+        let path_prefix = if extra_paths.is_empty() { String::new() } else { format!("set PATH={};%PATH%\n", extra_paths.join(";")) };
+
+        // Find bash.exe
+        let mut bash_line = String::new();
+        if let Some(ref res) = resources {
+            let candidates = [
+                res.join("git").join("bin").join("bash.exe"),
+                res.join("git").join("usr").join("bin").join("bash.exe"),
+            ];
+            for c in &candidates {
+                if c.exists() {
+                    bash_line = format!("set CLAUDE_CODE_GIT_BASH_PATH={}\n", c.to_string_lossy());
+                    break;
+                }
+            }
+        }
+
+        let bat = format!(
+            "@echo off\r\nset HOME={}\r\nset USERPROFILE={}\r\nset ANTHROPIC_API_KEY={}\r\nset ANTHROPIC_BASE_URL={}\r\nset FORCE_COLOR=1\r\nset TERM=xterm-256color\r\n{}{}\r\ncd /d \"{}\"\r\n{}\r\n",
+            vhome, vhome, cfg.api_key, cfg.base_url,
+            path_prefix.replace('\n', "\r\n"),
+            bash_line.replace('\n', "\r\n"),
+            working_dir,
+            claude_cmd,
+        );
+        fs::write(&script_path, &bat).map_err(|e| e.to_string())?;
+        Ok(script_path)
+    } else {
+        let script_path = home_dir.join("_pty_launch.sh");
+
+        let claude_cmd = if let Some(ref res) = resources {
+            let node = res.join("node").join("bin").join("node");
+            let cli = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if node.exists() && cli.exists() {
+                format!("'{}' '{}'", node.to_string_lossy(), cli.to_string_lossy())
+            } else {
+                "npx @anthropic-ai/claude-code".to_string()
+            }
+        } else {
+            "npx @anthropic-ai/claude-code".to_string()
+        };
+
+        let sh = format!(
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport FORCE_COLOR=1\nexport TERM=xterm-256color\ncd '{}'\n{}\n",
+            vhome.replace("'", "'\\''"),
+            cfg.api_key.replace("'", "'\\''"),
+            cfg.base_url.replace("'", "'\\''"),
+            working_dir.replace("'", "'\\''"),
+            claude_cmd,
+        );
+        fs::write(&script_path, &sh).map_err(|e| e.to_string())?;
+
+        // Make executable
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).ok();
+        }
+
+        Ok(script_path)
+    }
 }
 
 #[tauri::command]
@@ -43,6 +146,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let cfg = config::load_config()?.ok_or("No config found")?;
     let vhome = isolated_home();
+    let vhome_str = vhome.to_string_lossy().to_string();
 
     let working_dir = if cfg.working_dir.is_empty() {
         dirs::home_dir().unwrap_or_default().to_string_lossy().to_string()
@@ -57,67 +161,20 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
-    // Build command
-    let mut cmd = if let Some(ref res) = resources {
-        let node = if cfg!(target_os = "windows") {
-            res.join("node").join("node.exe")
-        } else {
-            res.join("node").join("bin").join("node")
-        };
-        let cli = res.join("claude-code").join("node_modules")
-            .join("@anthropic-ai").join("claude-code").join("cli.js");
-        if node.exists() && cli.exists() {
-            let mut c = CommandBuilder::new(&node);
-            c.arg(&cli);
-            c
-        } else {
-            let mut c = CommandBuilder::new(if cfg!(target_os = "windows") { "cmd" } else { "bash" });
-            if cfg!(target_os = "windows") { c.args(["/c", "npx", "@anthropic-ai/claude-code"]); }
-            else { c.args(["-c", "npx @anthropic-ai/claude-code"]); }
-            c
-        }
+    // Build wrapper script with all env vars baked in
+    let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
+
+    // Spawn the wrapper script via PTY
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = CommandBuilder::new("cmd");
+        c.args(["/c", &script_path.to_string_lossy()]);
+        c
     } else {
-        let mut c = CommandBuilder::new(if cfg!(target_os = "windows") { "cmd" } else { "bash" });
-        if cfg!(target_os = "windows") { c.args(["/c", "npx", "@anthropic-ai/claude-code"]); }
-        else { c.args(["-c", "npx @anthropic-ai/claude-code"]); }
+        let mut c = CommandBuilder::new("bash");
+        c.arg(&script_path);
         c
     };
-
-    cmd.env("HOME", &vhome);
-    cmd.env("ANTHROPIC_API_KEY", &cfg.api_key);
-    cmd.env("ANTHROPIC_BASE_URL", &cfg.base_url);
-    cmd.env("FORCE_COLOR", "1");
-    cmd.env("TERM", "xterm-256color");
     cmd.cwd(&working_dir);
-
-    // Add bundled git and node to PATH, and set CLAUDE_CODE_GIT_BASH_PATH
-    if let Some(ref res) = resources {
-        if cfg!(target_os = "windows") {
-            let git_cmd = res.join("git").join("cmd");
-            let git_bin = res.join("git").join("usr").join("bin");
-            let node_dir = res.join("node");
-            if git_cmd.exists() {
-                let sys_path = std::env::var("PATH").unwrap_or_default();
-                cmd.env("PATH", format!("{};{};{};{}", git_cmd.to_string_lossy(), git_bin.to_string_lossy(), node_dir.to_string_lossy(), sys_path));
-            }
-            // Find bash.exe in bundled git
-            let bash_candidates = [
-                res.join("git").join("bin").join("bash.exe"),
-                res.join("git").join("usr").join("bin").join("bash.exe"),
-                res.join("git").join("mingw64").join("bin").join("bash.exe"),
-            ];
-            for bash in &bash_candidates {
-                if bash.exists() {
-                    cmd.env("CLAUDE_CODE_GIT_BASH_PATH", bash.to_string_lossy().to_string());
-                    break;
-                }
-            }
-        }
-    }
-
-    if cfg!(target_os = "windows") {
-        cmd.env("USERPROFILE", &vhome);
-    }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
