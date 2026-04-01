@@ -30,6 +30,13 @@ fn isolated_home() -> PathBuf {
         .join("home");
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
+
+    // Pre-create .claude.json to skip onboarding
+    let claude_json = dir.join(".claude.json");
+    if !claude_json.exists() {
+        fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
+    }
+
     dir
 }
 
