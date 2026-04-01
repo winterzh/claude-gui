@@ -163,32 +163,36 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
-    // Build the command - on Windows spawn node.exe directly, on Unix use wrapper script
-    let mut cmd = if cfg!(target_os = "windows") {
-        let (node_exe, cli_js) = if let Some(ref res) = resources {
-            let n = res.join("node").join("node.exe");
-            let c = res.join("claude-code").join("node_modules")
-                .join("@anthropic-ai").join("claude-code").join("cli.js");
-            if n.exists() && c.exists() { (n, c) } else {
-                return Err("Bundled node.exe or claude-code not found in resources".to_string());
-            }
-        } else {
-            return Err("Resources directory not found".to_string());
-        };
+    // WORKAROUND: portable-pty's CommandBuilder::env() is broken on Windows.
+    // Instead, set env vars on the CURRENT process before spawning.
+    // The child inherits them via OS-level process environment inheritance.
+    // Save originals so we can restore after spawn.
+    let env_vars_to_set: Vec<(&str, String)> = vec![
+        ("HOME", vhome_str.clone()),
+        ("USERPROFILE", vhome_str.clone()),
+        ("ANTHROPIC_API_KEY", cfg.api_key.clone()),
+        ("ANTHROPIC_BASE_URL", cfg.base_url.clone()),
+        ("FORCE_COLOR", "1".to_string()),
+        ("TERM", "xterm-256color".to_string()),
+    ];
 
-        let mut c = CommandBuilder::new(&node_exe);
-        c.arg(&cli_js);
+    // Save originals
+    let saved_env: Vec<(String, Option<String>)> = env_vars_to_set
+        .iter()
+        .map(|(k, _)| (k.to_string(), std::env::var(k).ok()))
+        .collect();
 
-        // Set ALL env vars directly on the process
-        c.env("HOME", &vhome_str);
-        c.env("USERPROFILE", &vhome_str);
-        c.env("ANTHROPIC_API_KEY", &cfg.api_key);
-        c.env("ANTHROPIC_BASE_URL", &cfg.base_url);
-        c.env("FORCE_COLOR", "1");
-        c.env("TERM", "xterm-256color");
+    // Set on current process
+    for (k, v) in &env_vars_to_set {
+        std::env::set_var(k, v);
+    }
 
-        // Add bundled git and node to PATH
-        if let Some(ref res) = resources {
+    // Handle PATH and CLAUDE_CODE_GIT_BASH_PATH for bundled resources
+    let saved_path = std::env::var("PATH").ok();
+    let saved_bash_path = std::env::var("CLAUDE_CODE_GIT_BASH_PATH").ok();
+
+    if let Some(ref res) = resources {
+        if cfg!(target_os = "windows") {
             let mut extra: Vec<String> = Vec::new();
             for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
                 let p = res.join(sub);
@@ -196,18 +200,38 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
             }
             let sys_path = std::env::var("PATH").unwrap_or_default();
             extra.push(sys_path);
-            c.env("PATH", extra.join(";"));
+            std::env::set_var("PATH", extra.join(";"));
 
-            // bash.exe for Claude Code
             for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
                 let p = res.join(sub);
                 if p.exists() {
-                    c.env("CLAUDE_CODE_GIT_BASH_PATH", p.to_string_lossy().to_string());
+                    std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", p.to_string_lossy().to_string());
                     break;
                 }
             }
         }
-        c
+    }
+
+    // Build the command
+    let mut cmd = if cfg!(target_os = "windows") {
+        if let Some(ref res) = resources {
+            let node = res.join("node").join("node.exe");
+            let cli = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if node.exists() && cli.exists() {
+                let mut c = CommandBuilder::new(&node);
+                c.arg(&cli);
+                c
+            } else {
+                let mut c = CommandBuilder::new("cmd.exe");
+                c.args(["/c", "npx @anthropic-ai/claude-code"]);
+                c
+            }
+        } else {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.args(["/c", "npx @anthropic-ai/claude-code"]);
+            c
+        }
     } else {
         let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
         let mut c = CommandBuilder::new("bash");
@@ -218,6 +242,22 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
+
+    // RESTORE original env vars on the Tauri process
+    for (k, orig) in &saved_env {
+        match orig {
+            Some(v) => std::env::set_var(k, v),
+            None => std::env::remove_var(k),
+        }
+    }
+    match saved_path {
+        Some(v) => std::env::set_var("PATH", v),
+        None => {}
+    }
+    match saved_bash_path {
+        Some(v) => std::env::set_var("CLAUDE_CODE_GIT_BASH_PATH", v),
+        None => std::env::remove_var("CLAUDE_CODE_GIT_BASH_PATH"),
+    }
 
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
