@@ -44,7 +44,11 @@ fn build_launch_script(
     let home_dir = isolated_home();
 
     if cfg!(target_os = "windows") {
-        let script_path = home_dir.join("_pty_launch.bat");
+        // Use TEMP dir for the bat file to avoid path issues
+        let temp_dir = std::env::var("TEMP")
+            .or_else(|_| std::env::var("TMP"))
+            .unwrap_or_else(|_| home_dir.to_string_lossy().to_string());
+        let script_path = PathBuf::from(temp_dir).join("claude_launch.bat");
 
         // Determine claude command
         let claude_cmd = if let Some(ref res) = resources {
@@ -60,41 +64,39 @@ fn build_launch_script(
             "npx @anthropic-ai/claude-code".to_string()
         };
 
-        // Build PATH additions
-        let mut extra_paths = Vec::new();
-        if let Some(ref res) = resources {
-            let git_cmd = res.join("git").join("cmd");
-            let git_usr_bin = res.join("git").join("usr").join("bin");
-            let node_dir = res.join("node");
-            if git_cmd.exists() { extra_paths.push(git_cmd.to_string_lossy().to_string()); }
-            if git_usr_bin.exists() { extra_paths.push(git_usr_bin.to_string_lossy().to_string()); }
-            if node_dir.exists() { extra_paths.push(node_dir.to_string_lossy().to_string()); }
-        }
-        let path_prefix = if extra_paths.is_empty() { String::new() } else { format!("set PATH={};%PATH%\n", extra_paths.join(";")) };
+        // Build bat lines
+        let mut lines: Vec<String> = vec!["@echo off".to_string()];
+        lines.push(format!("set \"HOME={}\"", vhome));
+        lines.push(format!("set \"USERPROFILE={}\"", vhome));
+        lines.push(format!("set \"ANTHROPIC_API_KEY={}\"", cfg.api_key));
+        lines.push(format!("set \"ANTHROPIC_BASE_URL={}\"", cfg.base_url));
+        lines.push("set \"FORCE_COLOR=1\"".to_string());
+        lines.push("set \"TERM=xterm-256color\"".to_string());
 
-        // Find bash.exe
-        let mut bash_line = String::new();
+        // PATH with bundled git and node
         if let Some(ref res) = resources {
-            let candidates = [
-                res.join("git").join("bin").join("bash.exe"),
-                res.join("git").join("usr").join("bin").join("bash.exe"),
-            ];
-            for c in &candidates {
-                if c.exists() {
-                    bash_line = format!("set CLAUDE_CODE_GIT_BASH_PATH={}\n", c.to_string_lossy());
+            let mut extra: Vec<String> = Vec::new();
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+                let p = res.join(sub);
+                if p.exists() { extra.push(p.to_string_lossy().to_string()); }
+            }
+            if !extra.is_empty() {
+                lines.push(format!("set \"PATH={};%PATH%\"", extra.join(";")));
+            }
+            // Find bash.exe
+            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
+                let p = res.join(sub);
+                if p.exists() {
+                    lines.push(format!("set \"CLAUDE_CODE_GIT_BASH_PATH={}\"", p.to_string_lossy()));
                     break;
                 }
             }
         }
 
-        let bat = format!(
-            "@echo off\r\nset HOME={}\r\nset USERPROFILE={}\r\nset ANTHROPIC_API_KEY={}\r\nset ANTHROPIC_BASE_URL={}\r\nset FORCE_COLOR=1\r\nset TERM=xterm-256color\r\n{}{}\r\ncd /d \"{}\"\r\n{}\r\n",
-            vhome, vhome, cfg.api_key, cfg.base_url,
-            path_prefix.replace('\n', "\r\n"),
-            bash_line.replace('\n', "\r\n"),
-            working_dir,
-            claude_cmd,
-        );
+        lines.push(format!("cd /d \"{}\"", working_dir));
+        lines.push(claude_cmd);
+
+        let bat = lines.join("\r\n") + "\r\n";
         fs::write(&script_path, &bat).map_err(|e| e.to_string())?;
         Ok(script_path)
     } else {
@@ -161,68 +163,20 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
+    // Write a .bat/.sh launch script — most reliable way to set env vars
+    let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
+
     let mut cmd = if cfg!(target_os = "windows") {
-        // On Windows: build one big inline command with set && set && ... && node cli.js
-        let claude_cmd = if let Some(ref res) = resources {
-            let node = res.join("node").join("node.exe");
-            let cli = res.join("claude-code").join("node_modules")
-                .join("@anthropic-ai").join("claude-code").join("cli.js");
-            if node.exists() && cli.exists() {
-                format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
-            } else {
-                "npx @anthropic-ai/claude-code".to_string()
-            }
-        } else {
-            "npx @anthropic-ai/claude-code".to_string()
-        };
-
-        // Build PATH with bundled git and node
-        let mut path_parts: Vec<String> = Vec::new();
-        if let Some(ref res) = resources {
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
-                let p = res.join(sub);
-                if p.exists() { path_parts.push(p.to_string_lossy().to_string()); }
-            }
-        }
-        let sys_path = std::env::var("PATH").unwrap_or_default();
-        path_parts.push(sys_path);
-        let full_path = path_parts.join(";");
-
-        // Find bash.exe
-        let mut bash_set = String::new();
-        if let Some(ref res) = resources {
-            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
-                let p = res.join(sub);
-                if p.exists() {
-                    bash_set = format!("set CLAUDE_CODE_GIT_BASH_PATH={} && ", p.to_string_lossy());
-                    break;
-                }
-            }
-        }
-
-        let inline = format!(
-            "set HOME={} && set USERPROFILE={} && set ANTHROPIC_API_KEY={} && set ANTHROPIC_BASE_URL={} && set PATH={} && {}set FORCE_COLOR=1 && set TERM=xterm-256color && cd /d \"{}\" && {}",
-            vhome_str, vhome_str, cfg.api_key, cfg.base_url, full_path, bash_set, working_dir, claude_cmd,
-        );
-
-        let mut c = CommandBuilder::new("cmd");
-        c.args(["/c", &inline]);
+        // Spawn cmd.exe interactively, it will run the .bat
+        let mut c = CommandBuilder::new("cmd.exe");
+        c.args(["/k", &script_path.to_string_lossy()]);
         c
     } else {
-        // On macOS/Linux: use wrapper script
-        let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
         let mut c = CommandBuilder::new("bash");
         c.arg(&script_path);
         c
     };
     cmd.cwd(&working_dir);
-
-    // Also set env vars directly (belt and suspenders)
-    cmd.env("HOME", &vhome_str);
-    cmd.env("ANTHROPIC_API_KEY", &cfg.api_key);
-    cmd.env("ANTHROPIC_BASE_URL", &cfg.base_url);
-    cmd.env("FORCE_COLOR", "1");
-    cmd.env("TERM", "xterm-256color");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
