@@ -161,20 +161,68 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     let resources = find_resources();
 
-    // Build wrapper script with all env vars baked in
-    let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
-
-    // Spawn the wrapper script via PTY
     let mut cmd = if cfg!(target_os = "windows") {
+        // On Windows: build one big inline command with set && set && ... && node cli.js
+        let claude_cmd = if let Some(ref res) = resources {
+            let node = res.join("node").join("node.exe");
+            let cli = res.join("claude-code").join("node_modules")
+                .join("@anthropic-ai").join("claude-code").join("cli.js");
+            if node.exists() && cli.exists() {
+                format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
+            } else {
+                "npx @anthropic-ai/claude-code".to_string()
+            }
+        } else {
+            "npx @anthropic-ai/claude-code".to_string()
+        };
+
+        // Build PATH with bundled git and node
+        let mut path_parts: Vec<String> = Vec::new();
+        if let Some(ref res) = resources {
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+                let p = res.join(sub);
+                if p.exists() { path_parts.push(p.to_string_lossy().to_string()); }
+            }
+        }
+        let sys_path = std::env::var("PATH").unwrap_or_default();
+        path_parts.push(sys_path);
+        let full_path = path_parts.join(";");
+
+        // Find bash.exe
+        let mut bash_set = String::new();
+        if let Some(ref res) = resources {
+            for sub in &["git\\bin\\bash.exe", "git\\usr\\bin\\bash.exe"] {
+                let p = res.join(sub);
+                if p.exists() {
+                    bash_set = format!("set CLAUDE_CODE_GIT_BASH_PATH={} && ", p.to_string_lossy());
+                    break;
+                }
+            }
+        }
+
+        let inline = format!(
+            "set HOME={} && set USERPROFILE={} && set ANTHROPIC_API_KEY={} && set ANTHROPIC_BASE_URL={} && set PATH={} && {}set FORCE_COLOR=1 && set TERM=xterm-256color && cd /d \"{}\" && {}",
+            vhome_str, vhome_str, cfg.api_key, cfg.base_url, full_path, bash_set, working_dir, claude_cmd,
+        );
+
         let mut c = CommandBuilder::new("cmd");
-        c.args(["/c", &script_path.to_string_lossy()]);
+        c.args(["/c", &inline]);
         c
     } else {
+        // On macOS/Linux: use wrapper script
+        let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
         let mut c = CommandBuilder::new("bash");
         c.arg(&script_path);
         c
     };
     cmd.cwd(&working_dir);
+
+    // Also set env vars directly (belt and suspenders)
+    cmd.env("HOME", &vhome_str);
+    cmd.env("ANTHROPIC_API_KEY", &cfg.api_key);
+    cmd.env("ANTHROPIC_BASE_URL", &cfg.base_url);
+    cmd.env("FORCE_COLOR", "1");
+    cmd.env("TERM", "xterm-256color");
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
     drop(pair.slave);
