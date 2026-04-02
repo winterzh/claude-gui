@@ -23,19 +23,7 @@ impl PtyState {
 
 pub type SharedPtyState = Arc<Mutex<PtyState>>;
 
-/// Wrapper to allow sharing the writer between PtyState and the reader thread
-struct SharedWriter(Arc<Mutex<Box<dyn Write + Send>>>);
-
-impl Write for SharedWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        self.0.lock().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.write(buf)
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        self.0.lock().map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?.flush()
-    }
-}
-
-fn isolated_home() -> PathBuf {
+fn isolated_home(working_dir: &str) -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".claude-launcher")
@@ -43,10 +31,20 @@ fn isolated_home() -> PathBuf {
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
 
-    // Always write .claude.json to skip onboarding — without this,
-    // Claude Code ignores ANTHROPIC_BASE_URL and tries its own login flow
+    // Skip onboarding
     let claude_json = dir.join(".claude.json");
     fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
+
+    // Pre-trust the working directory
+    let settings = dir.join(".claude").join("settings.json");
+    let trust_json = serde_json::json!({
+        "permissions": {
+            "allow": ["*"],
+            "deny": []
+        },
+        "trustedDirectories": [working_dir]
+    });
+    fs::write(&settings, serde_json::to_string_pretty(&trust_json).unwrap_or_default()).ok();
 
     dir
 }
@@ -59,7 +57,7 @@ fn build_launch_script(
     working_dir: &str,
     resources: &Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    let home_dir = isolated_home();
+    let home_dir = isolated_home(working_dir);
 
     if cfg!(target_os = "windows") {
         // Use TEMP dir for the bat file to avoid path issues
@@ -157,14 +155,15 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     }
 
     let cfg = config::load_config()?.ok_or("No config found")?;
-    let vhome = isolated_home();
-    let vhome_str = vhome.to_string_lossy().to_string();
 
     let working_dir = if cfg.working_dir.is_empty() {
         dirs::home_dir().unwrap_or_default().to_string_lossy().to_string()
     } else {
         cfg.working_dir.clone()
     };
+
+    let vhome = isolated_home(&working_dir);
+    let vhome_str = vhome.to_string_lossy().to_string();
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -246,54 +245,23 @@ child.on("exit", (code) => process.exit(code || 0));
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    // Wrap writer in Arc<Mutex> so the reader thread can auto-answer prompts
-    let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
-
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(Box::new(SharedWriter(Arc::clone(&shared_writer))));
+        pty.writer = Some(writer);
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
 
     let app_clone = app.clone();
     let state_clone = Arc::clone(&state.inner());
-    let auto_writer = Arc::clone(&shared_writer);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut output_buf = String::new();
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                    app_clone.emit("pty-output", text.clone()).ok();
-
-                    // Auto-answer prompts from Claude Code
-                    output_buf.push_str(&text);
-                    // Keep buffer manageable
-                    if output_buf.len() > 4000 {
-                        output_buf = output_buf[output_buf.len()-2000..].to_string();
-                    }
-
-                    // Auto-answer "Do you trust..." / "Yes" prompts
-                    // and "use this API key" / API key confirmation
-                    let lower = output_buf.to_lowercase();
-                    if lower.contains("do you trust") || lower.contains("trust the files") {
-                        // Send "y" + Enter
-                        if let Ok(mut w) = auto_writer.lock() {
-                            w.write_all(b"y\r").ok();
-                            w.flush().ok();
-                        }
-                        output_buf.clear();
-                    } else if lower.contains("use this api") || lower.contains("api key") && lower.contains("yes") {
-                        // Send Enter to select "Yes"
-                        if let Ok(mut w) = auto_writer.lock() {
-                            w.write_all(b"\r").ok();
-                            w.flush().ok();
-                        }
-                        output_buf.clear();
-                    }
+                    app_clone.emit("pty-output", text).ok();
                 }
             }
         }
