@@ -1,68 +1,93 @@
 # Claude Code Launcher
 
-A lightweight desktop app that makes Claude Code easy to use. No terminal knowledge needed — just configure and click.
+A lightweight desktop app that makes Claude Code easy to use on Windows. No terminal knowledge needed — just configure and click.
+
+![Version](https://img.shields.io/github/v/release/winterzh/claude-gui)
+![Downloads](https://img.shields.io/github/downloads/winterzh/claude-gui/total)
 
 ## Features
 
-- **Embedded terminal** — Claude Code runs inside the app with a built-in terminal (xterm.js + PTY)
-- **Zero dependencies** — Windows installer bundles Node.js, Git, and Claude Code. Nothing else to install
-- **Isolated environment** — Uses a separate config directory (`~/.claude-launcher/home/`), won't interfere with your existing Claude Code setup
-- **Auto-skip onboarding** — Automatically creates `.claude.json` with `hasCompletedOnboarding: true` so Claude Code uses your API key directly
-- **Cross-platform** — Windows (installer) + macOS (dev)
-- **Dark / Light theme**
-- **Chinese / English**
+- **Embedded terminal** — Claude Code runs inside the app (xterm.js + PTY)
+- **Zero dependencies** — Installer bundles Node.js, Git, and Claude Code. Nothing else to install
+- **Multi-profile** — Save and switch between multiple API configurations
+- **Connection test** — Verify your API key and endpoint before launching
+- **Presets** — One-click setup for Anthropic, Pincc.ai, MiniMaxi
+- **Connection status** — Real-time indicator on the home page
+- **Isolated environment** — Separate config directory, won't touch your existing Claude Code setup
+- **Dark / Light theme, Chinese / English**
 
-## Download
+## Quick Start
 
-Go to the [Releases](https://github.com/winterzh/claude-gui/releases) page and download the latest `.exe` installer for Windows.
+### 1. Download
 
-## Usage
+Go to [Releases](https://github.com/winterzh/claude-gui/releases) and download the latest `.exe` installer.
 
-1. Install and open the app
-2. Enter your **API Key** and **API Base URL** (proxy/relay endpoint)
-3. Choose a **working directory**
-4. Click **Launch Claude Code**
-5. Claude Code runs in the embedded terminal — type and interact directly
+### 2. Install
 
-## What's bundled (Windows)
+Run the installer. Everything is bundled — no need to install Node.js, Git, or anything else.
 
-| Component | Size | Purpose |
-|-----------|------|---------|
-| Node.js v22 | ~30MB | Runtime for Claude Code |
-| PortableGit | ~50MB | Git operations + bash.exe |
-| Claude Code | ~20MB | The CLI itself |
+### 3. Configure
 
-Total installer size: ~100MB. No internet needed after install (except for API calls).
+Open the app. You'll see the Settings page:
+
+1. Choose a **preset** (Pincc.ai / MiniMaxi / Anthropic) or enter a custom Base URL
+2. Enter your **API Key**
+3. Click **Test Connection** to verify
+4. Click **Save & Launch**
+
+### 4. Launch
+
+1. Choose a **working directory** (the project you want Claude Code to work on)
+2. Click **Launch Claude Code**
+3. Start coding!
+
+## Presets
+
+| Provider | Base URL | Notes |
+|----------|----------|-------|
+| Anthropic (Direct) | `https://api.anthropic.com` | Requires direct API access |
+| Pincc.ai | `https://v2.pincc.ai` | China-friendly relay |
+| MiniMaxi | `https://api.minimaxi.com/anthropic` | China-friendly relay |
+
+You can also save custom configurations as profiles and switch between them.
+
+## What's bundled
+
+| Component | Purpose |
+|-----------|---------|
+| Node.js v22 | Runtime for Claude Code |
+| PortableGit | Git operations + bash.exe |
+| Claude Code | The CLI itself |
+
+Total installer size: ~100MB.
 
 ## How it works
 
 ```
-┌─────────────────────────────────┐
-│  Tauri App (Rust + React)       │
-│  ┌───────────────────────────┐  │
-│  │  Settings Page            │  │
-│  │  API Key + Base URL       │  │
-│  └───────────────────────────┘  │
-│  ┌───────────────────────────┐  │
-│  │  Embedded Terminal        │  │
-│  │  xterm.js + PTY           │  │
-│  │  ┌─────────────────────┐  │  │
-│  │  │  _wrapper.js        │  │  │
-│  │  │  sets process.env   │  │  │
-│  │  │  spawns Claude Code │  │  │
-│  │  └─────────────────────┘  │  │
-│  └───────────────────────────┘  │
-└─────────────────────────────────┘
+ User clicks "Launch Claude Code"
+              |
+              v
+ ┌─────────────────────────────┐
+ │  _wrapper.js                │
+ │  Sets process.env:          │
+ │    ANTHROPIC_API_KEY        │
+ │    ANTHROPIC_BASE_URL       │
+ │    HOME (isolated)          │
+ │    PATH (bundled git+node)  │
+ │  Spawns Claude Code CLI     │
+ └──────────┬──────────────────┘
+            |
+            v
+ ┌─────────────────────────────┐
+ │  Embedded Terminal          │
+ │  xterm.js <-> PTY <-> node │
+ └─────────────────────────────┘
 ```
 
 **Environment isolation:**
-- Config stored in `~/.config/claude-launcher/config.json` (or `%APPDATA%` on Windows)
-- Claude Code runs with `HOME`/`USERPROFILE` set to `~/.claude-launcher/home/`
-- `.claude.json` auto-created with `hasCompletedOnboarding: true` to skip login flow
-- Your real `~/.claude/` is never touched
-
-**Windows env var workaround:**
-portable-pty cannot pass environment variables on Windows ConPTY. The app generates a `_wrapper.js` that uses `child_process.spawn()` with an explicit `env` block to launch Claude Code with the correct `ANTHROPIC_API_KEY` and `ANTHROPIC_BASE_URL`.
+- Claude Code config: `~/.claude-launcher/home/.claude/` (not `~/.claude/`)
+- `.claude.json` auto-created with `hasCompletedOnboarding: true`
+- App config: `%APPDATA%/claude-launcher/config.json`
 
 ## Build from source
 
@@ -78,35 +103,35 @@ npm install
 npx tauri dev
 ```
 
-### Build for Windows
+### Release build
 
-Push a version tag to trigger GitHub Actions CI:
-
-```bash
-git tag v0.3.7
-git push origin v0.3.7
-```
-
-The CI downloads Node.js + PortableGit + Claude Code, bundles everything into a Windows `.exe` installer, and uploads to GitHub Releases.
-
-### Build locally (macOS)
+Push a version tag to trigger GitHub Actions:
 
 ```bash
-bash scripts/prepare-resources.sh
-npx tauri build
+git tag v0.4.0
+git push origin v0.4.0
 ```
+
+CI downloads Node.js + PortableGit + Claude Code, bundles into `.exe`, uploads to Releases.
 
 ## Troubleshooting
 
-**Claude Code says "Unable to connect to Anthropic services"**
-- Make sure you entered the correct API Base URL in Settings
-- The app auto-creates `.claude.json` with `hasCompletedOnboarding: true`. If it's missing, Claude Code ignores your Base URL and tries its own login flow
+### "Unable to connect to Anthropic services"
 
-**Terminal display issues on resize**
-- The terminal uses debounced resize. Slight delay is normal when resizing the window
+The app auto-creates `.claude.json` with `hasCompletedOnboarding: true`. Without this file, Claude Code ignores your Base URL. If you see this error:
 
-**Windows: "CLAUDE_CODE_GIT_BASH_PATH" errors**
-- The app bundles PortableGit and adds `git/bin` to PATH. If you still see this error, uninstall, delete `%LOCALAPPDATA%\Claude Code Launcher`, and reinstall the latest version
+1. Uninstall the app
+2. Delete `%LOCALAPPDATA%\Claude Code Launcher`
+3. Delete `%USERPROFILE%\.claude-launcher`
+4. Reinstall the latest version
+
+### Terminal display issues
+
+Slight delay when resizing is normal (debounced at 50ms).
+
+### Connection test works but Claude Code doesn't connect
+
+Make sure you're on the latest version. Older versions had issues with environment variable propagation on Windows.
 
 ## License
 
