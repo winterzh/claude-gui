@@ -23,29 +23,7 @@ impl PtyState {
 
 pub type SharedPtyState = Arc<Mutex<PtyState>>;
 
-struct ArcWriter(Arc<Mutex<Option<Box<dyn Write + Send>>>>);
-impl Write for ArcWriter {
-    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        match self.0.lock() {
-            Ok(mut guard) => match guard.as_mut() {
-                Some(w) => w.write(buf),
-                None => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")),
-            },
-            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
-        }
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        match self.0.lock() {
-            Ok(mut guard) => match guard.as_mut() {
-                Some(w) => w.flush(),
-                None => Ok(()),
-            },
-            Err(_) => Ok(()),
-        }
-    }
-}
-
-fn isolated_home(working_dir: &str) -> PathBuf {
+fn isolated_home() -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_default()
         .join(".claude-launcher")
@@ -53,20 +31,10 @@ fn isolated_home(working_dir: &str) -> PathBuf {
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
 
-    // Skip onboarding
+    // Always write .claude.json to skip onboarding — without this,
+    // Claude Code ignores ANTHROPIC_BASE_URL and tries its own login flow
     let claude_json = dir.join(".claude.json");
     fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
-
-    // Pre-trust the working directory
-    let settings = dir.join(".claude").join("settings.json");
-    let trust_json = serde_json::json!({
-        "permissions": {
-            "allow": ["*"],
-            "deny": []
-        },
-        "trustedDirectories": [working_dir]
-    });
-    fs::write(&settings, serde_json::to_string_pretty(&trust_json).unwrap_or_default()).ok();
 
     dir
 }
@@ -79,7 +47,7 @@ fn build_launch_script(
     working_dir: &str,
     resources: &Option<PathBuf>,
 ) -> Result<PathBuf, String> {
-    let home_dir = isolated_home(working_dir);
+    let home_dir = isolated_home();
 
     if cfg!(target_os = "windows") {
         // Use TEMP dir for the bat file to avoid path issues
@@ -177,15 +145,14 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     }
 
     let cfg = config::load_config()?.ok_or("No config found")?;
+    let vhome = isolated_home();
+    let vhome_str = vhome.to_string_lossy().to_string();
 
     let working_dir = if cfg.working_dir.is_empty() {
         dirs::home_dir().unwrap_or_default().to_string_lossy().to_string()
     } else {
         cfg.working_dir.clone()
     };
-
-    let vhome = isolated_home(&working_dir);
-    let vhome_str = vhome.to_string_lossy().to_string();
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -217,26 +184,36 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
         // Write a JS wrapper that spawns Claude Code with explicit env block
         let wrapper_path = vhome.join("_wrapper.js");
-        let cli_escaped = cli.to_string_lossy().replace('\\', "\\\\");
+        let cli_escaped = cli.to_string_lossy().replace('\\', "/");
+        let node_escaped = node.to_string_lossy().replace('\\', "/");
+        let cwd_escaped = working_dir.replace('\\', "/");
 
         let wrapper_js = format!(
-            r#"delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
-process.env.HOME = {home};
-process.env.USERPROFILE = {home};
-process.env.ANTHROPIC_API_KEY = {key};
-process.env.ANTHROPIC_BASE_URL = {url};
-process.env.FORCE_COLOR = "1";
-process.env.TERM = "xterm-256color";
-process.env.PATH = {path};
-try {{ process.chdir({cwd}); }} catch(e) {{ console.error("Warning: chdir failed:", e.message); }}
-require("{cli}");
+            r#"const {{ spawn }} = require("child_process");
+const env = Object.assign({{}}, process.env, {{
+  HOME: {home},
+  USERPROFILE: {home},
+  ANTHROPIC_API_KEY: {key},
+  ANTHROPIC_BASE_URL: {url},
+  FORCE_COLOR: "1",
+  TERM: "xterm-256color",
+  PATH: {path},
+}});
+delete env.CLAUDE_CODE_GIT_BASH_PATH;
+const child = spawn({node}, [{cli}], {{
+  env: env,
+  stdio: "inherit",
+  cwd: {cwd},
+}});
+child.on("exit", (code) => process.exit(code || 0));
 "#,
-            cli = cli_escaped,
             home = serde_json::to_string(&vhome_str.replace('\\', "/")).unwrap(),
             key = serde_json::to_string(&cfg.api_key).unwrap(),
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
-            cwd = serde_json::to_string(&working_dir).unwrap(),
+            node = serde_json::to_string(&node_escaped).unwrap(),
+            cli = serde_json::to_string(&cli_escaped).unwrap(),
+            cwd = serde_json::to_string(&cwd_escaped).unwrap(),
         );
         fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
 
@@ -257,59 +234,23 @@ require("{cli}");
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    // Auto-answer "Do you want to use this API key?" prompt
-    // Default is "No", need to press Up then Enter to select "Yes"
-    // Do this by monitoring initial output, one-shot only
-    let auto_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> = Arc::new(Mutex::new(Some(writer)));
-
-    // Give PtyState a clone that can write
     {
-        let writer_clone = Arc::clone(&auto_writer);
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(Box::new(ArcWriter(writer_clone)));
+        pty.writer = Some(writer);
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
 
     let app_clone = app.clone();
     let state_clone = Arc::clone(&state.inner());
-    let prompt_writer = Arc::clone(&auto_writer);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
-        let mut output_history = String::new();
-        let mut api_key_answered = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                    app_clone.emit("pty-output", text.clone()).ok();
-
-                    // Only monitor during startup (first ~30s worth of output)
-                    if !api_key_answered {
-                        output_history.push_str(&text);
-                        // Trim to avoid unbounded growth
-                        if output_history.len() > 8000 {
-                            output_history = output_history[output_history.len()-4000..].to_string();
-                        }
-
-                        // Detect "Do you want to use this API key?" prompt
-                        if output_history.contains("Do you want to use this API key") {
-                            // Small delay for the TUI to render
-                            thread::sleep(std::time::Duration::from_millis(300));
-                            if let Ok(mut guard) = prompt_writer.lock() {
-                                if let Some(ref mut w) = *guard {
-                                    // Press Up arrow to select "Yes", then Enter
-                                    w.write_all(b"\x1b[A").ok(); // Up arrow
-                                    thread::sleep(std::time::Duration::from_millis(100));
-                                    w.write_all(b"\r").ok(); // Enter
-                                    w.flush().ok();
-                                }
-                            }
-                            api_key_answered = true;
-                            output_history.clear();
-                        }
-                    }
+                    app_clone.emit("pty-output", text).ok();
                 }
             }
         }
