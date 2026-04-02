@@ -218,7 +218,6 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         // Write a JS wrapper that spawns Claude Code with explicit env block
         let wrapper_path = vhome.join("_wrapper.js");
         let cli_escaped = cli.to_string_lossy().replace('\\', "\\\\");
-        let cwd_escaped = working_dir.replace('\\', "/");
 
         let wrapper_js = format!(
             r#"delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
@@ -229,7 +228,7 @@ process.env.ANTHROPIC_BASE_URL = {url};
 process.env.FORCE_COLOR = "1";
 process.env.TERM = "xterm-256color";
 process.env.PATH = {path};
-process.chdir({cwd});
+try {{ process.chdir({cwd}); }} catch(e) {{ console.error("Warning: chdir failed:", e.message); }}
 require("{cli}");
 "#,
             cli = cli_escaped,
@@ -237,7 +236,7 @@ require("{cli}");
             key = serde_json::to_string(&cfg.api_key).unwrap(),
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
-            cwd = serde_json::to_string(&cwd_escaped).unwrap(),
+            cwd = serde_json::to_string(&working_dir).unwrap(),
         );
         fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/niconiahi/tauri-schema/v2/schema.json",
   "productName": "Claude Code Launcher",
-  "version": "0.4.5",
+  "version": "0.4.6",
   "identifier": "com.claude-launcher.app",
   "build": {
     "beforeDevCommand": "npm run dev",
