@@ -23,6 +23,28 @@ impl PtyState {
 
 pub type SharedPtyState = Arc<Mutex<PtyState>>;
 
+struct ArcWriter(Arc<Mutex<Option<Box<dyn Write + Send>>>>);
+impl Write for ArcWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self.0.lock() {
+            Ok(mut guard) => match guard.as_mut() {
+                Some(w) => w.write(buf),
+                None => Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "closed")),
+            },
+            Err(e) => Err(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())),
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self.0.lock() {
+            Ok(mut guard) => match guard.as_mut() {
+                Some(w) => w.flush(),
+                None => Ok(()),
+            },
+            Err(_) => Ok(()),
+        }
+    }
+}
+
 fn isolated_home(working_dir: &str) -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_default()
@@ -245,23 +267,59 @@ child.on("exit", (code) => process.exit(code || 0));
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
+    // Auto-answer "Do you want to use this API key?" prompt
+    // Default is "No", need to press Up then Enter to select "Yes"
+    // Do this by monitoring initial output, one-shot only
+    let auto_writer: Arc<Mutex<Option<Box<dyn Write + Send>>>> = Arc::new(Mutex::new(Some(writer)));
+
+    // Give PtyState a clone that can write
     {
+        let writer_clone = Arc::clone(&auto_writer);
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(writer);
+        pty.writer = Some(Box::new(ArcWriter(writer_clone)));
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
 
     let app_clone = app.clone();
     let state_clone = Arc::clone(&state.inner());
+    let prompt_writer = Arc::clone(&auto_writer);
     thread::spawn(move || {
         let mut buf = [0u8; 4096];
+        let mut output_history = String::new();
+        let mut api_key_answered = false;
         loop {
             match reader.read(&mut buf) {
                 Ok(0) | Err(_) => break,
                 Ok(n) => {
                     let text = String::from_utf8_lossy(&buf[..n]).to_string();
-                    app_clone.emit("pty-output", text).ok();
+                    app_clone.emit("pty-output", text.clone()).ok();
+
+                    // Only monitor during startup (first ~30s worth of output)
+                    if !api_key_answered {
+                        output_history.push_str(&text);
+                        // Trim to avoid unbounded growth
+                        if output_history.len() > 8000 {
+                            output_history = output_history[output_history.len()-4000..].to_string();
+                        }
+
+                        // Detect "Do you want to use this API key?" prompt
+                        if output_history.contains("Do you want to use this API key") {
+                            // Small delay for the TUI to render
+                            thread::sleep(std::time::Duration::from_millis(300));
+                            if let Ok(mut guard) = prompt_writer.lock() {
+                                if let Some(ref mut w) = *guard {
+                                    // Press Up arrow to select "Yes", then Enter
+                                    w.write_all(b"\x1b[A").ok(); // Up arrow
+                                    thread::sleep(std::time::Duration::from_millis(100));
+                                    w.write_all(b"\r").ok(); // Enter
+                                    w.flush().ok();
+                                }
+                            }
+                            api_key_answered = true;
+                            output_history.clear();
+                        }
+                    }
                 }
             }
         }
