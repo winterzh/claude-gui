@@ -138,25 +138,27 @@ export default function Setup({ onSaved }: Props) {
         </div>
 
         {/* Saved Profiles */}
-        {profiles.length > 0 && (
-          <div style={{ marginBottom: 16 }}>
-            <label style={labelStyle(T)}>{lang === "zh" ? "已保存配置" : "Saved Profiles"}</label>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-              {profiles.map((p) => (
-                <div key={p.name} style={{ display: "flex", alignItems: "center", gap: 2 }}>
-                  <button onClick={() => selectProfile(p.name)}
-                    style={{ padding: "5px 12px", borderRadius: "6px 0 0 6px", border: `1px solid ${activeProfile === p.name ? T.accent : T.border}`, background: activeProfile === p.name ? T.accent : T.bg, color: activeProfile === p.name ? "#fff" : T.textSecondary, cursor: "pointer", fontSize: 12 }}>
-                    {p.name}
-                  </button>
-                  <button onClick={() => deleteProfile(p.name)}
-                    style={{ padding: "5px 6px", borderRadius: "0 6px 6px 0", border: `1px solid ${T.border}`, borderLeft: "none", background: T.bg, color: T.error, cursor: "pointer", fontSize: 11 }}>
-                    x
-                  </button>
-                </div>
-              ))}
-            </div>
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle(T)}>{lang === "zh" ? "已保存配置" : "Saved Profiles"}</label>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+            {profiles.map((p) => (
+              <div key={p.name} style={{ display: "flex", alignItems: "center" }}>
+                <button onClick={() => selectProfile(p.name)}
+                  style={{ padding: "5px 12px", borderRadius: "6px 0 0 6px", border: `1px solid ${activeProfile === p.name ? T.accent : T.border}`, background: activeProfile === p.name ? T.accent : T.bg, color: activeProfile === p.name ? "#fff" : T.textSecondary, cursor: "pointer", fontSize: 12 }}>
+                  {p.name}
+                </button>
+                <button onClick={() => deleteProfile(p.name)}
+                  style={{ padding: "5px 6px", borderRadius: "0 6px 6px 0", border: `1px solid ${T.border}`, borderLeft: "none", background: T.bg, color: T.error, cursor: "pointer", fontSize: 11, fontWeight: 700 }}>
+                  x
+                </button>
+              </div>
+            ))}
+            <button onClick={saveAsProfile}
+              style={{ padding: "5px 12px", borderRadius: 6, border: `1px dashed ${T.border}`, background: "transparent", color: T.textMuted, cursor: "pointer", fontSize: 12 }}>
+              + {lang === "zh" ? "新建" : "New"}
+            </button>
           </div>
-        )}
+        </div>
 
         {/* API Key */}
         <div style={{ marginBottom: 16 }}>
@@ -218,11 +220,6 @@ export default function Setup({ onSaved }: Props) {
           </button>
         </div>
 
-        {/* Save as profile */}
-        <button onClick={saveAsProfile}
-          style={{ width: "100%", marginTop: 8, padding: "8px 0", borderRadius: 6, border: `1px solid ${T.border}`, background: "transparent", color: T.textSecondary, fontSize: 12, cursor: "pointer" }}>
-          {lang === "zh" ? "保存为配置" : "Save as Profile"}
-        </button>
       </div>
     </div>
   );
