@@ -217,35 +217,26 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
         // Write a JS wrapper that spawns Claude Code with explicit env block
         let wrapper_path = vhome.join("_wrapper.js");
-        let cli_escaped = cli.to_string_lossy().replace('\\', "/");
-        let node_escaped = node.to_string_lossy().replace('\\', "/");
+        let cli_escaped = cli.to_string_lossy().replace('\\', "\\\\");
         let cwd_escaped = working_dir.replace('\\', "/");
 
         let wrapper_js = format!(
-            r#"const {{ spawn }} = require("child_process");
-const env = Object.assign({{}}, process.env, {{
-  HOME: {home},
-  USERPROFILE: {home},
-  ANTHROPIC_API_KEY: {key},
-  ANTHROPIC_BASE_URL: {url},
-  FORCE_COLOR: "1",
-  TERM: "xterm-256color",
-  PATH: {path},
-}});
-delete env.CLAUDE_CODE_GIT_BASH_PATH;
-const child = spawn({node}, [{cli}], {{
-  env: env,
-  stdio: "inherit",
-  cwd: {cwd},
-}});
-child.on("exit", (code) => process.exit(code || 0));
+            r#"delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
+process.env.HOME = {home};
+process.env.USERPROFILE = {home};
+process.env.ANTHROPIC_API_KEY = {key};
+process.env.ANTHROPIC_BASE_URL = {url};
+process.env.FORCE_COLOR = "1";
+process.env.TERM = "xterm-256color";
+process.env.PATH = {path};
+process.chdir({cwd});
+require("{cli}");
 "#,
+            cli = cli_escaped,
             home = serde_json::to_string(&vhome_str.replace('\\', "/")).unwrap(),
             key = serde_json::to_string(&cfg.api_key).unwrap(),
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
-            node = serde_json::to_string(&node_escaped).unwrap(),
-            cli = serde_json::to_string(&cli_escaped).unwrap(),
             cwd = serde_json::to_string(&cwd_escaped).unwrap(),
         );
         fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
