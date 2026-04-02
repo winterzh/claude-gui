@@ -154,6 +154,11 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         cfg.working_dir.clone()
     };
 
+    // Validate working directory exists
+    if !std::path::Path::new(&working_dir).exists() {
+        return Err(format!("Working directory does not exist: {}", working_dir));
+    }
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
@@ -182,38 +187,30 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         extra_paths.push(sys_path);
         let full_path = extra_paths.join(";");
 
-        // Write a JS wrapper that spawns Claude Code with explicit env block
+        // Write a JS wrapper that sets env then requires Claude Code directly
+        // No spawn — runs in the same process, avoids all path issues
         let wrapper_path = vhome.join("_wrapper.js");
-        let cli_escaped = cli.to_string_lossy().replace('\\', "/");
-        let node_escaped = node.to_string_lossy().replace('\\', "/");
-        let cwd_escaped = working_dir.replace('\\', "/");
+        let cli_escaped = cli.to_string_lossy().replace('\\', "\\\\");
 
         let wrapper_js = format!(
-            r#"const {{ spawn }} = require("child_process");
-const env = Object.assign({{}}, process.env, {{
-  HOME: {home},
-  USERPROFILE: {home},
-  ANTHROPIC_API_KEY: {key},
-  ANTHROPIC_BASE_URL: {url},
-  FORCE_COLOR: "1",
-  TERM: "xterm-256color",
-  PATH: {path},
-}});
-delete env.CLAUDE_CODE_GIT_BASH_PATH;
-const child = spawn({node}, [{cli}], {{
-  env: env,
-  stdio: "inherit",
-  cwd: {cwd},
-}});
-child.on("exit", (code) => process.exit(code || 0));
+            r#"// Set env vars in-process
+process.env.HOME = {home};
+process.env.USERPROFILE = {home};
+process.env.ANTHROPIC_API_KEY = {key};
+process.env.ANTHROPIC_BASE_URL = {url};
+process.env.FORCE_COLOR = "1";
+process.env.TERM = "xterm-256color";
+process.env.PATH = {path};
+delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
+try {{ process.chdir({cwd}); }} catch(e) {{}}
+require("{cli}");
 "#,
             home = serde_json::to_string(&vhome_str.replace('\\', "/")).unwrap(),
             key = serde_json::to_string(&cfg.api_key).unwrap(),
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
-            node = serde_json::to_string(&node_escaped).unwrap(),
-            cli = serde_json::to_string(&cli_escaped).unwrap(),
-            cwd = serde_json::to_string(&cwd_escaped).unwrap(),
+            cwd = serde_json::to_string(&working_dir.replace('\\', "/")).unwrap(),
+            cli = cli_escaped,
         );
         fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
 
