@@ -16,6 +16,8 @@ export default function Chat({ onSettings }: Props) {
   const [page, setPage] = useState<"home" | "terminal">("home");
   const [error, setError] = useState("");
   const [showDirPrompt, setShowDirPrompt] = useState(false);
+  const [connStatus, setConnStatus] = useState<"unknown" | "ok" | "error">("unknown");
+  const [connMsg, setConnMsg] = useState("");
 
   const termRef = useRef<HTMLDivElement>(null);
   const xtermRef = useRef<Terminal | null>(null);
@@ -25,6 +27,14 @@ export default function Chat({ onSettings }: Props) {
     invoke<{ api_key: string; base_url: string; working_dir: string; model: string } | null>("load_config").then((cfg) => {
       if (cfg?.working_dir) setWorkingDir(cfg.working_dir);
       else setShowDirPrompt(true);
+      // Auto-test connection
+      if (cfg?.api_key && cfg?.base_url) {
+        setConnStatus("unknown");
+        setConnMsg(lang === "zh" ? "检查连接..." : "Checking...");
+        invoke<string>("test_connection", { apiKey: cfg.api_key, baseUrl: cfg.base_url })
+          .then(() => { setConnStatus("ok"); setConnMsg(lang === "zh" ? "已连接" : "Connected"); })
+          .catch((e) => { setConnStatus("error"); setConnMsg(String(e).slice(0, 80)); });
+      }
     });
   }, []);
 
@@ -163,6 +173,14 @@ export default function Chat({ onSettings }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", background: T.bg, gap: 24 }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: T.text }}>Claude Code Launcher</h1>
+
+      {/* Connection status */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: connStatus === "ok" ? T.success : connStatus === "error" ? T.error : T.textMuted }} />
+        <span style={{ fontSize: 13, color: connStatus === "ok" ? T.success : connStatus === "error" ? T.error : T.textMuted }}>
+          {connMsg || (lang === "zh" ? "未配置" : "Not configured")}
+        </span>
+      </div>
 
       <div style={{ background: T.bgSecondary, borderRadius: 12, padding: 32, width: 400, display: "flex", flexDirection: "column", gap: 16 }}>
         <div>

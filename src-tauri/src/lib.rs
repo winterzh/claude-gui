@@ -14,6 +14,8 @@ pub fn run() {
             config::load_config,
             config::save_working_dir,
             config::save_model_pref,
+            config::save_profiles,
+            config::test_connection,
             launcher::launch_claude_code,
             pty::spawn_claude,
             pty::pty_write,
