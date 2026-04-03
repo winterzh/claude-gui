@@ -4,6 +4,18 @@ use std::process::Command;
 
 use crate::config;
 
+/// Create a Command that hides console window on Windows
+fn silent_cmd(program: &std::ffi::OsStr) -> Command {
+    #[allow(unused_mut)]
+    let mut cmd = Command::new(program);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 fn isolated_home() -> Result<PathBuf, String> {
     let dir = dirs::home_dir()
         .unwrap_or_default()
@@ -173,7 +185,7 @@ pub async fn update_claude_code() -> Result<String, String> {
 
     // Run npm update in a blocking thread
     let (stdout, _stderr, success) = tokio::task::spawn_blocking(move || {
-        let output = Command::new(&node_clone)
+        let output = silent_cmd(node_clone.as_os_str())
             .args([
                 npm_clone.to_string_lossy().as_ref(),
                 "update",
@@ -200,7 +212,7 @@ pub async fn update_claude_code() -> Result<String, String> {
     let node_clone2 = node.clone();
     let claude_dir_clone2 = claude_dir.clone();
     let ver_output = tokio::task::spawn_blocking(move || {
-        Command::new(&node_clone2)
+        silent_cmd(node_clone2.as_os_str())
             .args(["-e", "console.log(require('@anthropic-ai/claude-code/package.json').version)"])
             .current_dir(&claude_dir_clone2)
             .env("NODE_PATH", claude_dir_clone2.join("node_modules").to_string_lossy().as_ref())

@@ -117,8 +117,14 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
 
     // Use curl for maximum compatibility (reqwest has TLS issues in Tauri on some platforms)
     let output = tokio::task::spawn_blocking(move || {
-        std::process::Command::new("curl")
-            .args([
+        let mut cmd = std::process::Command::new("curl");
+        // Hide console window on Windows
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        cmd.args([
                 "-s", "-w", "\n%{http_code}",
                 "-m", "15",
                 "-X", "POST",
@@ -127,8 +133,8 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
                 "-H", "anthropic-version: 2023-06-01",
                 "-H", "content-type: application/json",
                 "-d", body,
-            ])
-            .output()
+            ]);
+        cmd.output()
     })
     .await
     .map_err(|_| "Internal error".to_string())?
