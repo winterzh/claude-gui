@@ -30,13 +30,67 @@ fn isolated_home() -> PathBuf {
         .join("home");
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
-
-    // Always write .claude.json to skip onboarding — without this,
-    // Claude Code ignores ANTHROPIC_BASE_URL and tries its own login flow
-    let claude_json = dir.join(".claude.json");
-    fs::write(&claude_json, r#"{"theme":"dark","hasCompletedOnboarding":true}"#).ok();
-
     dir
+}
+
+/// Write .claude.json with onboarding complete, workspace trust, and API key approval
+fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
+    let claude_json = home_dir.join(".claude.json");
+
+    // Read existing config or start fresh
+    let mut config: serde_json::Value = if claude_json.exists() {
+        fs::read_to_string(&claude_json)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let obj = config.as_object_mut().unwrap();
+
+    // Skip onboarding
+    obj.insert("hasCompletedOnboarding".into(), serde_json::json!(true));
+    obj.insert("theme".into(), serde_json::json!("dark"));
+
+    // Pre-approve API key (hash first 20 chars like Claude Code does)
+    if !api_key.is_empty() {
+        let key_hash = if api_key.len() >= 20 {
+            &api_key[api_key.len()-20..]
+        } else {
+            api_key
+        };
+        let approved = obj.entry("customApiKeyResponses")
+            .or_insert(serde_json::json!({"approved":[],"rejected":[]}));
+        if let Some(arr) = approved.get_mut("approved").and_then(|a| a.as_array_mut()) {
+            if !arr.iter().any(|v| v.as_str() == Some(key_hash)) {
+                arr.push(serde_json::json!(key_hash));
+            }
+        }
+    }
+
+    // Pre-trust working directory
+    if !working_dir.is_empty() {
+        let projects = obj.entry("projects").or_insert(serde_json::json!({}));
+        let wd_normalized = working_dir.replace('\\', "/");
+        let project = projects.as_object_mut().unwrap()
+            .entry(&wd_normalized)
+            .or_insert(serde_json::json!({}));
+        if let Some(p) = project.as_object_mut() {
+            p.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+        }
+        // Also try backslash version for Windows
+        if working_dir.contains('\\') {
+            let project2 = projects.as_object_mut().unwrap()
+                .entry(working_dir)
+                .or_insert(serde_json::json!({}));
+            if let Some(p) = project2.as_object_mut() {
+                p.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+            }
+        }
+    }
+
+    fs::write(&claude_json, serde_json::to_string_pretty(&config).unwrap_or_default()).ok();
 }
 
 /// Build a wrapper script that sets env vars then launches Claude Code.
@@ -163,6 +217,9 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>, ski
         return Err(format!("Working directory does not exist: {}", working_dir));
     }
 
+    // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
+    write_claude_config(&vhome, &working_dir, &cfg.api_key);
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 })
@@ -237,40 +294,9 @@ require("{cli}");
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
-    // Wrap writer in Arc<Mutex> so auto-keypress thread can share it
-    let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
-
-    // Auto-answer prompts in background
-    {
-        let w = Arc::clone(&shared_writer);
-        thread::spawn(move || {
-            // Wait for trust folder prompt
-            thread::sleep(std::time::Duration::from_secs(3));
-            if let Ok(mut wr) = w.lock() {
-                // Enter = trust folder
-                wr.write_all(b"\r").ok();
-                wr.flush().ok();
-            }
-            // Wait for login method prompt
-            thread::sleep(std::time::Duration::from_secs(2));
-            if let Ok(mut wr) = w.lock() {
-                // Up arrow + Enter = select "Anthropic Console account · API usage billing"
-                wr.write_all(b"\x1b[A\r").ok();
-                wr.flush().ok();
-            }
-            // Wait for API key entry prompt
-            thread::sleep(std::time::Duration::from_secs(2));
-            if let Ok(mut wr) = w.lock() {
-                // Enter = confirm (reads from ANTHROPIC_API_KEY env)
-                wr.write_all(b"\r").ok();
-                wr.flush().ok();
-            }
-        });
-    }
-
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(Arc::clone(&shared_writer));
+        pty.writer = Some(Arc::new(Mutex::new(writer)));
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
