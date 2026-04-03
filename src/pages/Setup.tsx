@@ -18,15 +18,9 @@ function mask(s: string): string {
   return "*".repeat(Math.min(s.length, 24));
 }
 
-const DEFAULT_PROFILES: Profile[] = [
-  { name: "Anthropic", api_key: "", base_url: "https://api.anthropic.com" },
-  { name: "Pincc.ai", api_key: "", base_url: "https://v2.pincc.ai" },
-  { name: "MiniMaxi", api_key: "", base_url: "https://api.minimaxi.com/anthropic" },
-];
-
 export default function Setup({ onSaved }: Props) {
   const { theme: T, isDark, toggleTheme, lang, setLang } = useApp();
-  const [profiles, setProfiles] = useState<Profile[]>(DEFAULT_PROFILES);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
   const [activeProfile, setActiveProfile] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
@@ -36,11 +30,14 @@ export default function Setup({ onSaved }: Props) {
   const [error, setError] = useState("");
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [secretCode, setSecretCode] = useState("");
+  const [secretMsg, setSecretMsg] = useState("");
 
   useEffect(() => {
     invoke<{ api_key: string; base_url: string; profiles: Profile[]; active_profile: string } | null>("load_config").then((cfg) => {
       if (cfg) {
-        if (cfg.profiles?.length) setProfiles(cfg.profiles);
+        // Use saved profiles, or defaults if first time (no profiles key saved yet)
+        setProfiles(cfg.profiles || []);
         if (cfg.active_profile) {
           setActiveProfile(cfg.active_profile);
           const p = (cfg.profiles || []).find((x) => x.name === cfg.active_profile);
@@ -145,6 +142,41 @@ export default function Setup({ onSaved }: Props) {
     setTesting(false);
   };
 
+  const handleSecret = () => {
+    const code = secretCode.trim();
+    if (code === "cclxy01") {
+      const p: Profile = { name: "anthropic", api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc", base_url: "https://api.minimaxi.com/anthropic" };
+      const updated = profiles.filter((x) => x.name !== p.name);
+      updated.push(p);
+      setProfiles(updated);
+      setActiveProfile(p.name);
+      setApiKey(p.api_key);
+      setBaseUrl(p.base_url);
+      setEditingKey(false);
+      setEditingUrl(false);
+      invoke("save_profiles", { profiles: updated, activeProfile: p.name });
+      invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
+      setSecretMsg(lang === "zh" ? "已添加 anthropic 配置" : "Added anthropic profile");
+    } else if (code === "cclxy02") {
+      const p: Profile = { name: "pincc", api_key: "sk-ec4a1f370b6abd167191536c3f2441ad2d4a45d65c40cae4ca76039aa0caa011", base_url: "https://v2.pincc.ai" };
+      const updated = profiles.filter((x) => x.name !== p.name);
+      updated.push(p);
+      setProfiles(updated);
+      setActiveProfile(p.name);
+      setApiKey(p.api_key);
+      setBaseUrl(p.base_url);
+      setEditingKey(false);
+      setEditingUrl(false);
+      invoke("save_profiles", { profiles: updated, activeProfile: p.name });
+      invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
+      setSecretMsg(lang === "zh" ? "已添加 pincc 配置" : "Added pincc profile");
+    } else {
+      setSecretMsg(lang === "zh" ? "无效密码" : "Invalid code");
+    }
+    setSecretCode("");
+    setTimeout(() => setSecretMsg(""), 3000);
+  };
+
   const shadow = isDark ? "0 8px 32px rgba(0,0,0,0.3)" : "0 8px 32px rgba(0,0,0,0.08)";
   const currentKey = profiles.find((p) => p.name === activeProfile)?.api_key || apiKey;
   const currentUrl = profiles.find((p) => p.name === activeProfile)?.base_url || baseUrl;
@@ -239,6 +271,20 @@ export default function Setup({ onSaved }: Props) {
             {saving ? t(lang, "saving") : t(lang, "saveAndLaunch")}
           </button>
         </div>
+
+        {/* Secret code */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 16 }}>
+          <span style={{ fontSize: 16 }}>&#128274;</span>
+          <input type="password" value={secretCode} onChange={(e) => setSecretCode(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") handleSecret(); }}
+            placeholder={lang === "zh" ? "输入激活码" : "Enter activation code"}
+            style={{ ...inputStyle(T), flex: 1, fontSize: 12, padding: "6px 10px" }} />
+          <button onClick={handleSecret}
+            style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.bg, color: T.textSecondary, cursor: "pointer", fontSize: 12 }}>
+            {lang === "zh" ? "激活" : "Activate"}
+          </button>
+        </div>
+        {secretMsg && <p style={{ fontSize: 12, marginTop: 6, color: secretMsg.includes("已添加") || secretMsg.includes("Added") ? T.success : T.error }}>{secretMsg}</p>}
       </div>
     </div>
   );
