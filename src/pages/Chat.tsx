@@ -127,7 +127,12 @@ export default function Chat({ onSettings }: Props) {
 
     // Spawn Claude Code
     invoke("spawn_claude").catch((e) => {
-      xterm.write(`\x1b[31mFailed to start: ${e}\x1b[0m\r\n`);
+      const msg = String(e);
+      let friendly = msg;
+      if (msg.includes("not found")) friendly = "Claude Code resources not found. Please reinstall the app.";
+      else if (msg.includes("Working directory")) friendly = "Working directory does not exist. Please choose a valid directory.";
+      else if (msg.includes("No config")) friendly = "Please configure your API key and Base URL in Settings first.";
+      xterm.write(`\x1b[31m${friendly}\x1b[0m\r\n`);
     });
 
     return () => {
