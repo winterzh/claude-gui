@@ -10,7 +10,7 @@ use crate::config;
 use crate::launcher::find_resources;
 
 pub struct PtyState {
-    writer: Option<Box<dyn Write + Send>>,
+    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
     master: Option<Box<dyn MasterPty + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send>>,
 }
@@ -45,6 +45,7 @@ fn build_launch_script(
     cfg: &config::AppConfig,
     vhome: &str,
     working_dir: &str,
+    skip_perms: bool,
     resources: &Option<PathBuf>,
 ) -> Result<PathBuf, String> {
     let home_dir = isolated_home();
@@ -113,13 +114,15 @@ fn build_launch_script(
             "npx @anthropic-ai/claude-code".to_string()
         };
 
+        let skip_flag = if skip_perms { " --dangerously-skip-permissions" } else { "" };
         let sh = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport FORCE_COLOR=1\nexport TERM=xterm-256color\ncd '{}'\n{}\n",
+            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\nexport FORCE_COLOR=1\nexport TERM=xterm-256color\ncd '{}'\n{}{}\n",
             vhome.replace("'", "'\\''"),
             cfg.api_key.replace("'", "'\\''"),
             cfg.base_url.replace("'", "'\\''"),
             working_dir.replace("'", "'\\''"),
             claude_cmd,
+            skip_flag,
         );
         fs::write(&script_path, &sh).map_err(|e| e.to_string())?;
 
@@ -135,7 +138,8 @@ fn build_launch_script(
 }
 
 #[tauri::command]
-pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
+pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>, skip_permissions: Option<bool>) -> Result<(), String> {
+    let skip_perms = skip_permissions.unwrap_or(false);
     // Kill existing
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
@@ -203,6 +207,7 @@ process.env.TERM = "xterm-256color";
 process.env.PATH = {path};
 delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
 try {{ process.chdir({cwd}); }} catch(e) {{}}
+{skip_args}
 require("{cli}");
 "#,
             home = serde_json::to_string(&vhome_str.replace('\\', "/")).unwrap(),
@@ -210,6 +215,7 @@ require("{cli}");
             url = serde_json::to_string(&cfg.base_url).unwrap(),
             path = serde_json::to_string(&full_path).unwrap(),
             cwd = serde_json::to_string(&working_dir.replace('\\', "/")).unwrap(),
+            skip_args = if skip_perms { "process.argv.push('--dangerously-skip-permissions');" } else { "" },
             cli = cli_escaped,
         );
         fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
@@ -218,7 +224,7 @@ require("{cli}");
         c.arg(&wrapper_path);
         c
     } else {
-        let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, &resources)?;
+        let script_path = build_launch_script(&cfg, &vhome_str, &working_dir, skip_perms, &resources)?;
         let mut c = CommandBuilder::new("bash");
         c.arg(&script_path);
         c
@@ -231,9 +237,40 @@ require("{cli}");
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
     let mut reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
 
+    // Wrap writer in Arc<Mutex> so auto-keypress thread can share it
+    let shared_writer: Arc<Mutex<Box<dyn Write + Send>>> = Arc::new(Mutex::new(writer));
+
+    // Auto-answer prompts in background
+    {
+        let w = Arc::clone(&shared_writer);
+        thread::spawn(move || {
+            // Wait for trust folder prompt
+            thread::sleep(std::time::Duration::from_secs(3));
+            if let Ok(mut wr) = w.lock() {
+                // Enter = trust folder
+                wr.write_all(b"\r").ok();
+                wr.flush().ok();
+            }
+            // Wait for login method prompt
+            thread::sleep(std::time::Duration::from_secs(2));
+            if let Ok(mut wr) = w.lock() {
+                // Up arrow + Enter = select "Anthropic Console account · API usage billing"
+                wr.write_all(b"\x1b[A\r").ok();
+                wr.flush().ok();
+            }
+            // Wait for API key entry prompt
+            thread::sleep(std::time::Duration::from_secs(2));
+            if let Ok(mut wr) = w.lock() {
+                // Enter = confirm (reads from ANTHROPIC_API_KEY env)
+                wr.write_all(b"\r").ok();
+                wr.flush().ok();
+            }
+        });
+    }
+
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(writer);
+        pty.writer = Some(Arc::clone(&shared_writer));
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
@@ -264,10 +301,11 @@ require("{cli}");
 
 #[tauri::command]
 pub fn pty_write(data: String, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
-    let mut pty = state.lock().map_err(|e| e.to_string())?;
-    if let Some(ref mut w) = pty.writer {
-        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-        w.flush().map_err(|e| e.to_string())?;
+    let pty = state.lock().map_err(|e| e.to_string())?;
+    if let Some(ref w) = pty.writer {
+        let mut writer = w.lock().map_err(|e| e.to_string())?;
+        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        writer.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

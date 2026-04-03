@@ -15,6 +15,7 @@ export default function Chat({ onSettings }: Props) {
   const [workingDir, setWorkingDir] = useState("");
   const [page, setPage] = useState<"home" | "terminal">("home");
   const [error, setError] = useState("");
+  const [skipPerms, setSkipPerms] = useState(false);
   const [showDirPrompt, setShowDirPrompt] = useState(false);
   const [updating, setUpdating] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
@@ -126,7 +127,7 @@ export default function Chat({ onSettings }: Props) {
     resizeObs.observe(termRef.current);
 
     // Spawn Claude Code
-    invoke("spawn_claude").catch((e) => {
+    invoke("spawn_claude", { skipPermissions: skipPerms }).catch((e) => {
       xterm.write(`\x1b[31mFailed to start: ${e}\x1b[0m\r\n`);
     });
 
@@ -174,7 +175,7 @@ export default function Chat({ onSettings }: Props) {
           <span style={{ fontSize: 12, color: T.textMuted, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             {workingDir}
           </span>
-          <button onClick={() => invoke("spawn_claude")} style={btnStyle(T)}>
+          <button onClick={() => invoke("spawn_claude", { skipPermissions: skipPerms })} style={btnStyle(T)}>
             {lang === "zh" ? "重启" : "Restart"}
           </button>
         </div>
@@ -210,6 +211,12 @@ export default function Chat({ onSettings }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Skip permissions checkbox */}
+        <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.textSecondary }}>
+          <input type="checkbox" checked={skipPerms} onChange={(e) => setSkipPerms(e.target.checked)} />
+          {lang === "zh" ? "跳过权限确认（dangerously-skip-permissions）" : "Skip permission prompts (dangerously-skip-permissions)"}
+        </label>
 
         <button onClick={launchInApp}
           style={{ width: "100%", padding: "14px 0", borderRadius: 8, border: "none", background: T.accent, color: "#fff", fontSize: 16, fontWeight: 700, cursor: "pointer" }}>
