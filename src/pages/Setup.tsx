@@ -32,9 +32,11 @@ export default function Setup({ onSaved }: Props) {
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [secretCode, setSecretCode] = useState("");
   const [secretMsg, setSecretMsg] = useState("");
+  const [skipPerms, setSkipPerms] = useState(false);
+  const [showSkipConfirm, setShowSkipConfirm] = useState(false);
 
   useEffect(() => {
-    invoke<{ api_key: string; base_url: string; profiles: Profile[]; active_profile: string } | null>("load_config").then((cfg) => {
+    invoke<{ api_key: string; base_url: string; profiles: Profile[]; active_profile: string; skip_permissions?: boolean } | null>("load_config").then((cfg) => {
       if (cfg) {
         // Use saved profiles, or defaults if first time (no profiles key saved yet)
         setProfiles(cfg.profiles || []);
@@ -46,6 +48,7 @@ export default function Setup({ onSaved }: Props) {
           setApiKey(cfg.api_key || "");
           setBaseUrl(cfg.base_url || "");
         }
+        if (cfg.skip_permissions) setSkipPerms(true);
       }
     });
   }, []);
@@ -257,6 +260,48 @@ export default function Setup({ onSaved }: Props) {
             </button>
           </div>
         </div>
+
+        {/* Skip permissions */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 13, color: T.textSecondary }}>
+            <input type="checkbox" checked={skipPerms} onChange={(e) => {
+              if (e.target.checked) { setShowSkipConfirm(true); }
+              else { setSkipPerms(false); invoke("save_skip_permissions", { skip: false }); }
+            }} />
+            {lang === "zh" ? "跳过所有权限确认" : "Skip all permission prompts"}
+          </label>
+          {skipPerms && <p style={{ fontSize: 11, color: T.error, marginTop: 4, marginLeft: 26 }}>
+            {lang === "zh"
+              ? "⚠ Claude Code 将自动执行所有操作，不再询问确认。仅建议在信任的项目中使用。"
+              : "⚠ Claude Code will execute all operations without asking. Only use in trusted projects."}
+          </p>}
+        </div>
+
+        {/* Skip permissions confirmation dialog */}
+        {showSkipConfirm && (
+          <div style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 999 }}>
+            <div style={{ background: T.bgSecondary, borderRadius: 12, padding: 28, maxWidth: 400, boxShadow: "0 8px 32px rgba(0,0,0,0.3)" }}>
+              <h3 style={{ fontSize: 16, fontWeight: 700, color: T.error, marginBottom: 12 }}>
+                {lang === "zh" ? "⚠ 安全警告" : "⚠ Security Warning"}
+              </h3>
+              <p style={{ fontSize: 13, color: T.text, lineHeight: 1.6, marginBottom: 16 }}>
+                {lang === "zh"
+                  ? "开启后，Claude Code 将跳过所有权限确认，自动执行文件修改、命令运行等操作。这意味着 Claude 可以在不询问你的情况下修改或删除文件。\n\n仅建议在你完全信任的沙盒环境中使用。"
+                  : "When enabled, Claude Code will skip all permission checks and automatically execute file modifications, commands, etc. This means Claude can modify or delete files without asking.\n\nOnly recommended for trusted sandbox environments."}
+              </p>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                <button onClick={() => setShowSkipConfirm(false)}
+                  style={{ padding: "8px 20px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.bg, color: T.text, cursor: "pointer", fontSize: 13 }}>
+                  {lang === "zh" ? "取消" : "Cancel"}
+                </button>
+                <button onClick={() => { setSkipPerms(true); setShowSkipConfirm(false); invoke("save_skip_permissions", { skip: true }); }}
+                  style={{ padding: "8px 20px", borderRadius: 6, border: "none", background: T.error, color: "#fff", cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                  {lang === "zh" ? "我了解风险，开启" : "I understand, enable"}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {testResult && <p style={{ fontSize: 13, marginBottom: 12, color: testResult.ok ? T.success : T.error, wordBreak: "break-word" }}>{testResult.msg}</p>}
         {error && <p style={{ fontSize: 13, marginBottom: 12, color: T.error }}>{error}</p>}

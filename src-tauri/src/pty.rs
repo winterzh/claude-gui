@@ -192,8 +192,7 @@ fn build_launch_script(
 }
 
 #[tauri::command]
-pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>, skip_permissions: Option<bool>) -> Result<(), String> {
-    let skip_perms = skip_permissions.unwrap_or(false);
+pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
     // Kill existing
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
@@ -203,6 +202,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>, ski
     }
 
     let cfg = config::load_config()?.ok_or("No config found")?;
+    let skip_perms = cfg.skip_permissions;
     let vhome = isolated_home();
     let vhome_str = vhome.to_string_lossy().to_string();
 

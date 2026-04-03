@@ -21,6 +21,8 @@ pub struct AppConfig {
     pub profiles: Vec<Profile>,
     #[serde(default)]
     pub active_profile: String,
+    #[serde(default)]
+    pub skip_permissions: bool,
 }
 
 fn default_config() -> AppConfig {
@@ -31,6 +33,7 @@ fn default_config() -> AppConfig {
         model: String::new(),
         profiles: Vec::new(),
         active_profile: String::new(),
+        skip_permissions: false,
     }
 }
 
@@ -66,6 +69,15 @@ pub fn save_working_dir(dir: String) -> Result<(), String> {
 pub fn save_model_pref(model: String) -> Result<(), String> {
     let mut config = load_config()?.unwrap_or_else(default_config);
     config.model = model;
+    let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
+    fs::write(config_path(), json).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn save_skip_permissions(skip: bool) -> Result<(), String> {
+    let mut config = load_config()?.unwrap_or_else(default_config);
+    config.skip_permissions = skip;
     let json = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     fs::write(config_path(), json).map_err(|e| e.to_string())?;
     Ok(())
