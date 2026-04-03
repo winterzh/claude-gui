@@ -29,13 +29,13 @@ export default function Chat({ onSettings }: Props) {
     invoke<{ api_key: string; base_url: string; working_dir: string; model: string } | null>("load_config").then((cfg) => {
       if (cfg?.working_dir) setWorkingDir(cfg.working_dir);
       else setShowDirPrompt(true);
-      // Auto-test connection
+      // Show config status without network request
       if (cfg?.api_key && cfg?.base_url) {
-        setConnStatus("unknown");
-        setConnMsg(lang === "zh" ? "检查连接..." : "Checking...");
-        invoke<string>("test_connection", { apiKey: cfg.api_key, baseUrl: cfg.base_url })
-          .then(() => { setConnStatus("ok"); setConnMsg(lang === "zh" ? "已连接" : "Connected"); })
-          .catch((e) => { setConnStatus("error"); setConnMsg(String(e)); });
+        setConnStatus("ok");
+        setConnMsg(lang === "zh" ? "已配置" : "Configured");
+      } else {
+        setConnStatus("error");
+        setConnMsg(lang === "zh" ? "未配置" : "Not configured");
       }
     });
   }, []);
