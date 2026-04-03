@@ -144,3 +144,79 @@ pub fn launch_claude_code() -> Result<(), String> {
 
     Ok(())
 }
+
+#[tauri::command]
+pub async fn update_claude_code() -> Result<String, String> {
+    let res = find_resources().ok_or("Resources directory not found")?;
+
+    let node = if cfg!(target_os = "windows") {
+        res.join("node").join("node.exe")
+    } else {
+        res.join("node").join("bin").join("node")
+    };
+
+    let npm = if cfg!(target_os = "windows") {
+        res.join("node").join("node_modules").join("npm").join("bin").join("npm-cli.js")
+    } else {
+        res.join("node").join("bin").join("npm")
+    };
+
+    let claude_dir = res.join("claude-code");
+
+    if !node.exists() {
+        return Err(format!("node not found at {}", node.display()));
+    }
+
+    let node_clone = node.clone();
+    let npm_clone = npm.clone();
+    let claude_dir_clone = claude_dir.clone();
+
+    // Run npm update in a blocking thread
+    let (stdout, stderr, success) = tokio::task::spawn_blocking(move || {
+        let output = Command::new(&node_clone)
+            .args([
+                npm_clone.to_string_lossy().as_ref(),
+                "update",
+                "@anthropic-ai/claude-code",
+                "--prefix",
+                claude_dir_clone.to_string_lossy().as_ref(),
+            ])
+            .output();
+        match output {
+            Ok(o) => (
+                String::from_utf8_lossy(&o.stdout).to_string(),
+                String::from_utf8_lossy(&o.stderr).to_string(),
+                o.status.success(),
+            ),
+            Err(e) => (String::new(), e.to_string(), false),
+        }
+    }).await.map_err(|e| e.to_string())?;
+
+    if !success {
+        return Err(format!("npm update failed: {}", stderr));
+    }
+
+    // Get installed version
+    let node_clone2 = node.clone();
+    let claude_dir_clone2 = claude_dir.clone();
+    let ver_output = tokio::task::spawn_blocking(move || {
+        Command::new(&node_clone2)
+            .args(["-e", "console.log(require('@anthropic-ai/claude-code/package.json').version)"])
+            .current_dir(&claude_dir_clone2)
+            .env("NODE_PATH", claude_dir_clone2.join("node_modules").to_string_lossy().as_ref())
+            .output()
+            .ok()
+    }).await.ok().flatten();
+
+    let version = ver_output
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .unwrap_or_default()
+        .trim()
+        .to_string();
+
+    if version.is_empty() {
+        Ok(format!("Updated. {}", stdout.trim()))
+    } else {
+        Ok(format!("Claude Code v{}", version))
+    }
+}

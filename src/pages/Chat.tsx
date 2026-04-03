@@ -16,6 +16,8 @@ export default function Chat({ onSettings }: Props) {
   const [page, setPage] = useState<"home" | "terminal">("home");
   const [error, setError] = useState("");
   const [showDirPrompt, setShowDirPrompt] = useState(false);
+  const [updating, setUpdating] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState("");
   const [connStatus, setConnStatus] = useState<"unknown" | "ok" | "error">("unknown");
   const [connMsg, setConnMsg] = useState("");
 
@@ -37,6 +39,18 @@ export default function Chat({ onSettings }: Props) {
       }
     });
   }, []);
+
+  const handleUpdate = async () => {
+    setUpdating(true);
+    setUpdateMsg("");
+    try {
+      const msg = await invoke<string>("update_claude_code");
+      setUpdateMsg(msg);
+    } catch (e) {
+      setUpdateMsg(String(e));
+    }
+    setUpdating(false);
+  };
 
   const chooseDir = async () => {
     const sel = await open({ directory: true, multiple: false });
@@ -205,10 +219,14 @@ export default function Chat({ onSettings }: Props) {
         {error && <p style={{ color: T.error, fontSize: 13, textAlign: "center", wordBreak: "break-word" }}>{error}</p>}
       </div>
 
-      <div style={{ display: "flex", gap: 12 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <button onClick={onSettings} style={btnStyle(T)}>{t(lang, "settings")}</button>
         <button onClick={toggleTheme} style={btnStyle(T)}>{isDark ? "Light" : "Dark"}</button>
+        <button onClick={handleUpdate} disabled={updating} style={{ ...btnStyle(T), opacity: updating ? 0.6 : 1 }}>
+          {updating ? (lang === "zh" ? "更新中..." : "Updating...") : (lang === "zh" ? "更新 Claude Code" : "Update Claude Code")}
+        </button>
       </div>
+      {updateMsg && <p style={{ fontSize: 13, color: updateMsg.startsWith("Error") || updateMsg.startsWith("npm") ? T.error : T.success }}>{updateMsg}</p>}
     </div>
   );
 }
