@@ -10,7 +10,7 @@ use crate::config;
 use crate::launcher::find_resources;
 
 pub struct PtyState {
-    writer: Option<Arc<Mutex<Box<dyn Write + Send>>>>,
+    writer: Option<Box<dyn Write + Send>>,
     master: Option<Box<dyn MasterPty + Send>>,
     child: Option<Box<dyn portable_pty::Child + Send>>,
 }
@@ -69,23 +69,17 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
         }
     }
 
-    // Pre-trust working directory
+    // Pre-trust working directory (both slash variants for Windows)
     if !working_dir.is_empty() {
         let projects = obj.entry("projects").or_insert(serde_json::json!({}));
-        let wd_normalized = working_dir.replace('\\', "/");
-        let project = projects.as_object_mut().unwrap()
-            .entry(&wd_normalized)
-            .or_insert(serde_json::json!({}));
-        if let Some(p) = project.as_object_mut() {
-            p.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
-        }
-        // Also try backslash version for Windows
-        if working_dir.contains('\\') {
-            let project2 = projects.as_object_mut().unwrap()
-                .entry(working_dir)
-                .or_insert(serde_json::json!({}));
-            if let Some(p) = project2.as_object_mut() {
-                p.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+        let mut paths_to_trust = vec![working_dir.replace('\\', "/")];
+        if working_dir.contains('\\') { paths_to_trust.push(working_dir.to_string()); }
+        if let Some(proj_map) = projects.as_object_mut() {
+            for wd in &paths_to_trust {
+                let project = proj_map.entry(wd).or_insert(serde_json::json!({}));
+                if let Some(p) = project.as_object_mut() {
+                    p.insert("hasTrustDialogAccepted".into(), serde_json::json!(true));
+                }
             }
         }
     }
@@ -296,7 +290,7 @@ require("{cli}");
 
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        pty.writer = Some(Arc::new(Mutex::new(writer)));
+        pty.writer = Some(writer);
         pty.master = Some(pair.master);
         pty.child = Some(child);
     }
@@ -327,11 +321,10 @@ require("{cli}");
 
 #[tauri::command]
 pub fn pty_write(data: String, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
-    let pty = state.lock().map_err(|e| e.to_string())?;
-    if let Some(ref w) = pty.writer {
-        let mut writer = w.lock().map_err(|e| e.to_string())?;
-        writer.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
+    let mut pty = state.lock().map_err(|e| e.to_string())?;
+    if let Some(ref mut w) = pty.writer {
+        w.write_all(data.as_bytes()).map_err(|e| e.to_string())?;
+        w.flush().map_err(|e| e.to_string())?;
     }
     Ok(())
 }

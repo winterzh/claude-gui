@@ -17,7 +17,7 @@ export default function Chat({ onSettings }: Props) {
   const [error, setError] = useState("");
   const [showDirPrompt, setShowDirPrompt] = useState(false);
   const [updating, setUpdating] = useState(false);
-  const [updateMsg, setUpdateMsg] = useState("");
+  const [updateResult, setUpdateResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [connStatus, setConnStatus] = useState<"unknown" | "ok" | "error">("unknown");
   const [connMsg, setConnMsg] = useState("");
 
@@ -42,12 +42,12 @@ export default function Chat({ onSettings }: Props) {
 
   const handleUpdate = async () => {
     setUpdating(true);
-    setUpdateMsg("");
+    setUpdateResult(null);
     try {
       const msg = await invoke<string>("update_claude_code");
-      setUpdateMsg(msg);
+      setUpdateResult({ ok: true, msg });
     } catch (e) {
-      setUpdateMsg(String(e));
+      setUpdateResult({ ok: false, msg: String(e) });
     }
     setUpdating(false);
   };
@@ -141,7 +141,18 @@ export default function Chat({ onSettings }: Props) {
       xtermRef.current = null;
       fitRef.current = null;
     };
-  }, [page, isDark]);
+  }, [page]);
+
+  // Update theme without recreating terminal
+  useEffect(() => {
+    if (xtermRef.current) {
+      xtermRef.current.options.theme = isDark ? {
+        background: "#0f0f23", foreground: "#e0e0e0", cursor: "#e07a5f", selectionBackground: "#3d3d5c",
+      } : {
+        background: "#ffffff", foreground: "#1d1d1f", cursor: "#d4603a", selectionBackground: "#b4d7ff",
+      };
+    }
+  }, [isDark]);
 
   // --- Directory prompt ---
   if (showDirPrompt) {
@@ -226,7 +237,7 @@ export default function Chat({ onSettings }: Props) {
           {updating ? (lang === "zh" ? "更新中..." : "Updating...") : (lang === "zh" ? "更新 Claude Code" : "Update Claude Code")}
         </button>
       </div>
-      {updateMsg && <p style={{ fontSize: 13, color: updateMsg.startsWith("Error") || updateMsg.startsWith("npm") ? T.error : T.success }}>{updateMsg}</p>}
+      {updateResult && <p style={{ fontSize: 13, color: updateResult.ok ? T.success : T.error }}>{updateResult.msg}</p>}
     </div>
   );
 }

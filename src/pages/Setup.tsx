@@ -31,7 +31,7 @@ export default function Setup({ onSaved }: Props) {
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [secretCode, setSecretCode] = useState("");
-  const [secretMsg, setSecretMsg] = useState("");
+  const [secretResult, setSecretResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [skipPerms, setSkipPerms] = useState(false);
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
 
@@ -145,39 +145,33 @@ export default function Setup({ onSaved }: Props) {
     setTesting(false);
   };
 
+  const applySecretProfile = async (p: Profile, msg: string) => {
+    const updated = [...profiles.filter((x) => x.name !== p.name), p];
+    setProfiles(updated);
+    setActiveProfile(p.name);
+    setApiKey(p.api_key);
+    setBaseUrl(p.base_url);
+    setEditingKey(false);
+    setEditingUrl(false);
+    await invoke("save_profiles", { profiles: updated, activeProfile: p.name });
+    await invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
+    setSecretResult({ ok: true, msg });
+  };
+
+  const SECRETS: Record<string, Profile & { msg_zh: string; msg_en: string }> = {
+    cclxy01: { name: "anthropic", api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc", base_url: "https://api.minimaxi.com/anthropic", msg_zh: "已添加 anthropic 配置", msg_en: "Added anthropic profile" },
+    cclxy02: { name: "pincc", api_key: "sk-ec4a1f370b6abd167191536c3f2441ad2d4a45d65c40cae4ca76039aa0caa011", base_url: "https://v2.pincc.ai", msg_zh: "已添加 pincc 配置", msg_en: "Added pincc profile" },
+  };
+
   const handleSecret = () => {
-    const code = secretCode.trim();
-    if (code === "cclxy01") {
-      const p: Profile = { name: "anthropic", api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc", base_url: "https://api.minimaxi.com/anthropic" };
-      const updated = profiles.filter((x) => x.name !== p.name);
-      updated.push(p);
-      setProfiles(updated);
-      setActiveProfile(p.name);
-      setApiKey(p.api_key);
-      setBaseUrl(p.base_url);
-      setEditingKey(false);
-      setEditingUrl(false);
-      invoke("save_profiles", { profiles: updated, activeProfile: p.name });
-      invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
-      setSecretMsg(lang === "zh" ? "已添加 anthropic 配置" : "Added anthropic profile");
-    } else if (code === "cclxy02") {
-      const p: Profile = { name: "pincc", api_key: "sk-ec4a1f370b6abd167191536c3f2441ad2d4a45d65c40cae4ca76039aa0caa011", base_url: "https://v2.pincc.ai" };
-      const updated = profiles.filter((x) => x.name !== p.name);
-      updated.push(p);
-      setProfiles(updated);
-      setActiveProfile(p.name);
-      setApiKey(p.api_key);
-      setBaseUrl(p.base_url);
-      setEditingKey(false);
-      setEditingUrl(false);
-      invoke("save_profiles", { profiles: updated, activeProfile: p.name });
-      invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
-      setSecretMsg(lang === "zh" ? "已添加 pincc 配置" : "Added pincc profile");
+    const s = SECRETS[secretCode.trim()];
+    if (s) {
+      applySecretProfile({ name: s.name, api_key: s.api_key, base_url: s.base_url }, lang === "zh" ? s.msg_zh : s.msg_en);
     } else {
-      setSecretMsg(lang === "zh" ? "无效密码" : "Invalid code");
+      setSecretResult({ ok: false, msg: lang === "zh" ? "无效密码" : "Invalid code" });
     }
     setSecretCode("");
-    setTimeout(() => setSecretMsg(""), 3000);
+    setTimeout(() => setSecretResult(null), 3000);
   };
 
   const shadow = isDark ? "0 8px 32px rgba(0,0,0,0.3)" : "0 8px 32px rgba(0,0,0,0.08)";
@@ -329,7 +323,7 @@ export default function Setup({ onSaved }: Props) {
             {lang === "zh" ? "激活" : "Activate"}
           </button>
         </div>
-        {secretMsg && <p style={{ fontSize: 12, marginTop: 6, color: secretMsg.includes("已添加") || secretMsg.includes("Added") ? T.success : T.error }}>{secretMsg}</p>}
+        {secretResult && <p style={{ fontSize: 12, marginTop: 6, color: secretResult.ok ? T.success : T.error }}>{secretResult.msg}</p>}
       </div>
     </div>
   );
