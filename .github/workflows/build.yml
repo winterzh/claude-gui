@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "v*"
+  schedule:
+    - cron: "0 8 * * 1"  # Every Monday 8:00 UTC
   workflow_dispatch:
 
 permissions:
@@ -39,14 +41,21 @@ jobs:
           dir src-tauri\resources\node\
           dir src-tauri\resources\claude-code\node_modules\@anthropic-ai\claude-code\cli.js
 
+      - name: Generate tag for scheduled builds
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        id: auto_tag
+        run: |
+          $date = Get-Date -Format "yyyyMMdd"
+          echo "tag=auto-$date" >> $env:GITHUB_OUTPUT
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI: true
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: "Claude Code Launcher ${{ github.ref_name }}"
+          tagName: ${{ github.event_name == 'push' && github.ref_name || steps.auto_tag.outputs.tag }}
+          releaseName: "Claude Code Launcher ${{ github.event_name == 'push' && github.ref_name || steps.auto_tag.outputs.tag }}"
           releaseBody: |
             ## Claude Code Launcher
 
