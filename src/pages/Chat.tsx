@@ -35,7 +35,7 @@ export default function Chat({ onSettings }: Props) {
         setConnMsg(lang === "zh" ? "检查连接..." : "Checking...");
         invoke<string>("test_connection", { apiKey: cfg.api_key, baseUrl: cfg.base_url })
           .then(() => { setConnStatus("ok"); setConnMsg(lang === "zh" ? "已连接" : "Connected"); })
-          .catch((e) => { setConnStatus("error"); setConnMsg(String(e).slice(0, 80)); });
+          .catch((e) => { setConnStatus("error"); setConnMsg(String(e)); });
       }
     });
   }, []);

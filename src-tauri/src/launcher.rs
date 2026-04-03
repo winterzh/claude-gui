@@ -164,7 +164,7 @@ pub async fn update_claude_code() -> Result<String, String> {
     let claude_dir = res.join("claude-code");
 
     if !node.exists() {
-        return Err(format!("node not found at {}", node.display()));
+        return Err("Claude Code resources are missing. Please reinstall the app.".to_string());
     }
 
     let node_clone = node.clone();
@@ -172,7 +172,7 @@ pub async fn update_claude_code() -> Result<String, String> {
     let claude_dir_clone = claude_dir.clone();
 
     // Run npm update in a blocking thread
-    let (stdout, stderr, success) = tokio::task::spawn_blocking(move || {
+    let (stdout, _stderr, success) = tokio::task::spawn_blocking(move || {
         let output = Command::new(&node_clone)
             .args([
                 npm_clone.to_string_lossy().as_ref(),
@@ -193,7 +193,7 @@ pub async fn update_claude_code() -> Result<String, String> {
     }).await.map_err(|e| e.to_string())?;
 
     if !success {
-        return Err(format!("npm update failed: {}", stderr));
+        return Err("Update failed. Please check your network connection and try again.".to_string());
     }
 
     // Get installed version

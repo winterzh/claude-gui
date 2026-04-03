@@ -162,7 +162,7 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
         if stderr.contains("SSL") || stderr.contains("certificate") {
             return Err("SSL/TLS error. The server's certificate may be invalid.".to_string());
         }
-        return Err(format!("Connection failed. Please check URL and network.\n{}", stderr.chars().take(150).collect::<String>()));
+        return Err("Connection failed. Please check your Base URL and network connection.".to_string());
     }
 
     if (200..300).contains(&status) {

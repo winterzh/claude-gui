@@ -208,7 +208,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     // Validate working directory exists
     if !std::path::Path::new(&working_dir).exists() {
-        return Err(format!("Working directory does not exist: {}", working_dir));
+        return Err("Working directory does not exist. Please choose a valid directory in Settings.".to_string());
     }
 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
@@ -229,8 +229,8 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         let cli = res.join("claude-code").join("node_modules")
             .join("@anthropic-ai").join("claude-code").join("cli.js");
 
-        if !node.exists() { return Err(format!("node.exe not found at {}", node.display())); }
-        if !cli.exists() { return Err(format!("cli.js not found at {}", cli.display())); }
+        if !node.exists() { return Err("Claude Code resources are missing. Please reinstall the app.".to_string()); }
+        if !cli.exists() { return Err("Claude Code is not properly installed. Please reinstall the app.".to_string()); }
 
         // Build PATH with bundled git/node
         let mut extra_paths: Vec<String> = Vec::new();
