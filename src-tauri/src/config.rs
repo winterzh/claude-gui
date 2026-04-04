@@ -125,15 +125,23 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
             cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
         }
         cmd.args([
-                "-s", "-w", "\n%{http_code}",
-                "-m", "15",
-                "-X", "POST",
-                &url,
-                "-H", &format!("x-api-key: {}", api_key),
-                "-H", "anthropic-version: 2023-06-01",
-                "-H", "content-type: application/json",
-                "-d", body,
-            ]);
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "-m",
+            "15",
+            "-X",
+            "POST",
+            &url,
+            "-H",
+            &format!("x-api-key: {}", api_key),
+            "-H",
+            "anthropic-version: 2023-06-01",
+            "-H",
+            "content-type: application/json",
+            "-d",
+            body,
+        ]);
         cmd.output()
     })
     .await
@@ -168,7 +176,9 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
         if stderr.contains("SSL") || stderr.contains("certificate") {
             return Err("SSL/TLS error. The server's certificate may be invalid.".to_string());
         }
-        return Err("Connection failed. Please check your Base URL and network connection.".to_string());
+        return Err(
+            "Connection failed. Please check your Base URL and network connection.".to_string(),
+        );
     }
 
     if (200..300).contains(&status) {
@@ -189,6 +199,9 @@ pub async fn test_connection(api_key: String, base_url: String) -> Result<String
         };
         Err(msg.to_string())
     } else {
-        Err(format!("Unexpected response (HTTP {}). Please check your configuration.", status))
+        Err(format!(
+            "Unexpected response (HTTP {}). Please check your configuration.",
+            status
+        ))
     }
 }

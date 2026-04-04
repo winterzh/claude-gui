@@ -23,9 +23,9 @@ pub fn find_resources() -> Option<PathBuf> {
     let candidates = [
         exe_dir.join("resources"),
         exe_dir.join("../Resources/resources"), // macOS .app bundle
-        exe_dir.join("../../resources"),         // dev: target/debug/
+        exe_dir.join("../../resources"),        // dev: target/debug/
         exe_dir.join("../../../src-tauri/resources"), // dev
-        PathBuf::from("src-tauri/resources"),    // CWD
+        PathBuf::from("src-tauri/resources"),   // CWD
     ];
 
     for c in &candidates {
@@ -57,11 +57,25 @@ pub fn launch_claude_code() -> Result<(), String> {
     let claude_cmd = if let Some(ref res) = resources {
         if cfg!(target_os = "windows") {
             let node = res.join("node").join("node.exe");
-            let cli = res.join("claude-code").join("node_modules").join("@anthropic-ai").join("claude-code").join("cli.js");
-            format!("\"{}\" \"{}\"", node.to_string_lossy(), cli.to_string_lossy())
+            let cli = res
+                .join("claude-code")
+                .join("node_modules")
+                .join("@anthropic-ai")
+                .join("claude-code")
+                .join("cli.js");
+            format!(
+                "\"{}\" \"{}\"",
+                node.to_string_lossy(),
+                cli.to_string_lossy()
+            )
         } else {
             let node = res.join("node").join("bin").join("node");
-            let cli = res.join("claude-code").join("node_modules").join("@anthropic-ai").join("claude-code").join("cli.js");
+            let cli = res
+                .join("claude-code")
+                .join("node_modules")
+                .join("@anthropic-ai")
+                .join("claude-code")
+                .join("cli.js");
             format!("'{}' '{}'", node.to_string_lossy(), cli.to_string_lossy())
         }
     } else {
@@ -80,7 +94,10 @@ pub fn launch_claude_code() -> Result<(), String> {
             claude_cmd,
         );
         fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-        Command::new("chmod").args(["+x", &script_path.to_string_lossy()]).output().ok();
+        Command::new("chmod")
+            .args(["+x", &script_path.to_string_lossy()])
+            .output()
+            .ok();
         Command::new("open")
             .args(["-a", "Terminal", &script_path.to_string_lossy()])
             .spawn()
@@ -127,12 +144,19 @@ pub fn launch_claude_code() -> Result<(), String> {
             claude_cmd,
         );
         fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-        Command::new("chmod").args(["+x", &script_path.to_string_lossy()]).output().ok();
+        Command::new("chmod")
+            .args(["+x", &script_path.to_string_lossy()])
+            .output()
+            .ok();
 
         let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
         let mut launched = false;
         for term in &terminals {
-            if Command::new(term).args(["-e", &script_path.to_string_lossy()]).spawn().is_ok() {
+            if Command::new(term)
+                .args(["-e", &script_path.to_string_lossy()])
+                .spawn()
+                .is_ok()
+            {
                 launched = true;
                 break;
             }
@@ -156,7 +180,11 @@ pub async fn update_claude_code() -> Result<String, String> {
     };
 
     let npm = if cfg!(target_os = "windows") {
-        res.join("node").join("node_modules").join("npm").join("bin").join("npm-cli.js")
+        res.join("node")
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js")
     } else {
         res.join("node").join("bin").join("npm")
     };
@@ -190,10 +218,14 @@ pub async fn update_claude_code() -> Result<String, String> {
             ),
             Err(e) => (String::new(), e.to_string(), false),
         }
-    }).await.map_err(|e| e.to_string())?;
+    })
+    .await
+    .map_err(|e| e.to_string())?;
 
     if !success {
-        return Err("Update failed. Please check your network connection and try again.".to_string());
+        return Err(
+            "Update failed. Please check your network connection and try again.".to_string(),
+        );
     }
 
     // Get installed version
@@ -201,12 +233,24 @@ pub async fn update_claude_code() -> Result<String, String> {
     let claude_dir_clone2 = claude_dir.clone();
     let ver_output = tokio::task::spawn_blocking(move || {
         Command::new(&node_clone2)
-            .args(["-e", "console.log(require('@anthropic-ai/claude-code/package.json').version)"])
+            .args([
+                "-e",
+                "console.log(require('@anthropic-ai/claude-code/package.json').version)",
+            ])
             .current_dir(&claude_dir_clone2)
-            .env("NODE_PATH", claude_dir_clone2.join("node_modules").to_string_lossy().as_ref())
+            .env(
+                "NODE_PATH",
+                claude_dir_clone2
+                    .join("node_modules")
+                    .to_string_lossy()
+                    .as_ref(),
+            )
             .output()
             .ok()
-    }).await.ok().flatten();
+    })
+    .await
+    .ok()
+    .flatten();
 
     let version = ver_output
         .and_then(|o| String::from_utf8(o.stdout).ok())
