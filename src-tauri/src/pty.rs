@@ -114,55 +114,61 @@ fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
     }
 }
 
-/// Keep the launcher's isolated HOME, but import the user's Claude settings
-/// so proxy/certificate/network env stays available inside packaged builds.
-fn sync_user_settings(home_dir: &PathBuf) {
-    let Some(real_home) = dirs::home_dir() else {
-        return;
-    };
-    let src = real_home.join(".claude").join("settings.json");
-    if !src.exists() {
-        return;
-    }
-
-    let Ok(source_text) = fs::read_to_string(&src) else {
-        return;
-    };
-    let Ok(source_json) = serde_json::from_str::<serde_json::Value>(&source_text) else {
-        return;
-    };
+/// Sync the user's real ~/.claude/ directory to the isolated home.
+/// Copies everything needed for web search, OAuth, sessions, etc.
+/// but strips API keys from settings.json to use launcher's config.
+fn sync_user_claude_dir(home_dir: &PathBuf) {
+    let Some(real_home) = dirs::home_dir() else { return; };
+    let src_dir = real_home.join(".claude");
+    if !src_dir.exists() { return; }
 
     let dst_dir = home_dir.join(".claude");
     fs::create_dir_all(&dst_dir).ok();
-    let dst = dst_dir.join("settings.json");
 
-    let mut merged = if dst.exists() {
-        fs::read_to_string(&dst)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    // Recursively copy all files from real ~/.claude/ to isolated ~/.claude/
+    fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) {
+        let Ok(entries) = fs::read_dir(src) else { return; };
+        for entry in entries.flatten() {
+            let src_path = entry.path();
+            let file_name = entry.file_name();
+            let dst_path = dst.join(&file_name);
 
-    merge_json(&mut merged, &source_json);
-
-    if let Some(env) = merged.get_mut("env").and_then(|v| v.as_object_mut()) {
-        for key in [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ] {
-            env.remove(key);
+            if src_path.is_dir() {
+                // Skip conversation/session history dirs to keep isolation
+                let name = file_name.to_string_lossy();
+                if name == "projects" || name == "todos" || name == "sessions" {
+                    continue;
+                }
+                fs::create_dir_all(&dst_path).ok();
+                copy_dir_recursive(&src_path, &dst_path);
+            } else {
+                // Don't overwrite files that are newer in dst
+                let src_mod = fs::metadata(&src_path).and_then(|m| m.modified()).ok();
+                let dst_mod = fs::metadata(&dst_path).and_then(|m| m.modified()).ok();
+                if let (Some(s), Some(d)) = (src_mod, dst_mod) {
+                    if d >= s { continue; }
+                }
+                fs::copy(&src_path, &dst_path).ok();
+            }
         }
     }
 
-    fs::write(
-        &dst,
-        serde_json::to_string_pretty(&merged).unwrap_or_default(),
-    )
-    .ok();
+    copy_dir_recursive(&src_dir, &dst_dir);
+
+    // Strip API keys from settings.json so launcher's config takes precedence
+    let settings_path = dst_dir.join("settings.json");
+    if settings_path.exists() {
+        if let Ok(text) = fs::read_to_string(&settings_path) {
+            if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(env) = json.get_mut("env").and_then(|v| v.as_object_mut()) {
+                    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
+                        env.remove(key);
+                    }
+                }
+                fs::write(&settings_path, serde_json::to_string_pretty(&json).unwrap_or_default()).ok();
+            }
+        }
+    }
 }
 
 /// Build a wrapper script that sets env vars then launches Claude Code.
@@ -368,7 +374,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
-    sync_user_settings(&vhome);
+    sync_user_claude_dir(&vhome);
 
     let pty_system = native_pty_system();
     let pair = pty_system
