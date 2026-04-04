@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "claude-launcher"
-version = "0.8.6"
+version = "0.8.7"
 dependencies = [
  "dirs",
  "portable-pty",

@@ -50,6 +50,23 @@ if (Test-Path $bashPath) {
     Get-ChildItem -Recurse "$ResourceDir\git\bin" -ErrorAction SilentlyContinue | Select-Object -First 20
 }
 
+# --- uv (for MCP servers like minimax-coding-plan-mcp) ---
+New-Item -ItemType Directory -Force -Path "$ResourceDir\uv" | Out-Null
+$UvUrl = "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-pc-windows-msvc.zip"
+$UvArchive = "$ResourceDir\uv-archive.zip"
+
+Write-Host "--- Downloading uv ---"
+Invoke-WebRequest -Uri $UvUrl -OutFile $UvArchive
+
+Write-Host "--- Extracting uv ---"
+Expand-Archive -Path $UvArchive -DestinationPath "$ResourceDir\uv" -Force
+# Move files from nested dir if needed
+$uvExe = Get-ChildItem -Recurse "$ResourceDir\uv" -Filter "uv.exe" | Select-Object -First 1
+if ($uvExe -and $uvExe.DirectoryName -ne "$ResourceDir\uv") {
+    Move-Item "$($uvExe.DirectoryName)\*" "$ResourceDir\uv\" -Force
+}
+Remove-Item -Force $UvArchive
+
 # --- Claude Code ---
 Write-Host "--- Installing @anthropic-ai/claude-code ---"
 Push-Location "$ResourceDir\claude-code"
@@ -64,4 +81,5 @@ Write-Host "=== Resources ready ==="
 Write-Host "Node: $(Get-ChildItem $ResourceDir\node\node.exe)"
 Write-Host "Git: $(Get-ChildItem $ResourceDir\git\cmd\git.exe)"
 Write-Host "Bash: $(Get-ChildItem $ResourceDir\git\bin\bash.exe -ErrorAction SilentlyContinue)"
+Write-Host "uv: $(Get-ChildItem $ResourceDir\uv\uv.exe -ErrorAction SilentlyContinue)"
 Write-Host "Claude Code: $(Get-ChildItem $ResourceDir\claude-code\node_modules\@anthropic-ai\claude-code\cli.js)"

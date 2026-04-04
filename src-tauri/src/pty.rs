@@ -171,6 +171,72 @@ fn sync_user_claude_dir(home_dir: &PathBuf) {
     }
 }
 
+/// Configure MCP servers based on the API provider.
+/// When using MiniMaxi, add their MCP server for web search.
+fn configure_mcp(home_dir: &PathBuf, base_url: &str, api_key: &str) {
+    let claude_dir = home_dir.join(".claude");
+    fs::create_dir_all(&claude_dir).ok();
+    let mcp_path = claude_dir.join("mcp.json");
+
+    // Read existing mcp.json or start fresh
+    let mut mcp: serde_json::Value = if mcp_path.exists() {
+        fs::read_to_string(&mcp_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let servers = mcp.as_object_mut()
+        .unwrap()
+        .entry("mcpServers")
+        .or_insert(serde_json::json!({}));
+
+    if base_url.contains("minimax") {
+        // Add MiniMaxi MCP server for web search
+        let mcp_base_path = home_dir.join("minimax_mcp_output");
+        fs::create_dir_all(&mcp_base_path).ok();
+
+        // Determine uvx command path — use bundled uv if available, else system uvx
+        let resources = crate::launcher::find_resources();
+        let uvx_cmd = if let Some(ref res) = resources {
+            let bundled = if cfg!(target_os = "windows") {
+                res.join("uv").join("uv.exe")
+            } else {
+                res.join("uv").join("uv")
+            };
+            if bundled.exists() {
+                bundled.to_string_lossy().to_string()
+            } else {
+                "uvx".to_string()
+            }
+        } else {
+            "uvx".to_string()
+        };
+
+        if let Some(s) = servers.as_object_mut() {
+            s.insert("MiniMax".to_string(), serde_json::json!({
+                "command": uvx_cmd,
+                "args": ["minimax-coding-plan-mcp"],
+                "env": {
+                    "MINIMAX_API_KEY": api_key,
+                    "MINIMAX_MCP_BASE_PATH": mcp_base_path.to_string_lossy(),
+                    "MINIMAX_API_HOST": "https://api.minimaxi.com",
+                    "MINIMAX_API_RESOURCE_MODE": "url"
+                }
+            }));
+        }
+    } else {
+        // Remove MiniMax MCP if not using minimax
+        if let Some(s) = servers.as_object_mut() {
+            s.remove("MiniMax");
+        }
+    }
+
+    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp).unwrap_or_default()).ok();
+}
+
 /// Build a wrapper script that sets env vars then launches Claude Code.
 /// This is more reliable than CommandBuilder::env() on Windows.
 fn build_launch_script(
@@ -223,7 +289,7 @@ fn build_launch_script(
         // PATH with bundled git and node
         if let Some(ref res) = resources {
             let mut extra: Vec<String> = Vec::new();
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
                 let p = res.join(sub);
                 if p.exists() {
                     extra.push(p.to_string_lossy().to_string());
@@ -375,6 +441,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
     sync_user_claude_dir(&vhome);
+    configure_mcp(&vhome, &cfg.base_url, &cfg.api_key);
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -411,7 +478,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
         // Build PATH with bundled git/node
         let mut extra_paths: Vec<String> = Vec::new();
-        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
             let p = res.join(sub);
             if p.exists() {
                 extra_paths.push(p.to_string_lossy().to_string().replace('\\', "/"));
@@ -517,16 +584,17 @@ require("{cli}");
         c.env("FORCE_COLOR", "1");
         c.env("TERM", "xterm-256color");
 
-        // Ensure bundled node is in PATH alongside system tools
+        // Ensure bundled node + uv are in PATH alongside system tools
         if let Some(ref res) = resources {
             let node_bin_dir = res.join("node").join("bin");
+            let uv_dir = res.join("uv");
             let sys_path = std::env::var("PATH").unwrap_or_default();
-            // Add common macOS tool paths that GUI apps might miss
             c.env(
                 "PATH",
                 format!(
-                    "{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
+                    "{}:{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
                     node_bin_dir.to_string_lossy(),
+                    uv_dir.to_string_lossy(),
                     sys_path
                 ),
             );
