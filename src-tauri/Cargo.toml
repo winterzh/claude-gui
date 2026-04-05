@@ -1,6 +1,6 @@
 [package]
 name = "claude-launcher"
-version = "0.9.3"
+version = "0.9.5"
 description = "A one-click Claude Code launcher"
 authors = ["you"]
 edition = "2021"
@@ -20,6 +20,7 @@ serde_json = "1"
 dirs = "6"
 tokio = { version = "1", features = ["rt-multi-thread"] }
 portable-pty = "0.8"
+log = "0.4"
 
 [profile.release]
 strip = true

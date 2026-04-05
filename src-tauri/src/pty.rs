@@ -1,3 +1,4 @@
+use log::info;
 use portable_pty::{native_pty_system, CommandBuilder, MasterPty, PtySize};
 use std::fs;
 use std::io::{Read, Write};
@@ -35,6 +36,33 @@ fn isolated_home() -> PathBuf {
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();
     dir
+}
+
+/// Mirrors Claude Code's VX() function: replace all non-alphanumeric chars with "-".
+fn path_to_slug(path: &str) -> String {
+    path.chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect()
+}
+
+/// Windows: canonicalize a working directory path to a stable form.
+/// - Uses fs::canonicalize for a real path
+/// - Lowercases drive letter (C:\ -> c:\)
+/// - Normalizes to forward slashes
+#[cfg(target_os = "windows")]
+fn canonicalize_windows_path(path: &str) -> String {
+    let resolved = std::fs::canonicalize(path)
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|_| path.to_string());
+
+    let normalized = resolved.replace('\\', "/");
+
+    // Lowercase drive letter: "C:/..." -> "c:/..."
+    let mut chars: Vec<char> = normalized.chars().collect();
+    if chars.len() >= 2 && chars[1] == ':' && chars[0].is_ascii_uppercase() {
+        chars[0] = chars[0].to_ascii_lowercase();
+    }
+    chars.into_iter().collect()
 }
 
 /// Write .claude.json with onboarding complete, workspace trust, and API key approval
@@ -118,10 +146,11 @@ fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
 }
 
 /// Windows-only: sync recent-activity history from real ~/.claude into the
-/// isolated home so the "Recent activity" panel is populated on first launch.
+/// isolated home so the "Recent activity" panel is populated.
+/// Focuses on ensuring the current working directory's project slug is present.
 /// macOS must NOT call this — it risks triggering system permission popups.
 #[cfg(target_os = "windows")]
-fn sync_user_history_for_windows(home_dir: &PathBuf) {
+fn sync_user_history_for_windows(home_dir: &PathBuf, working_dir: &str) {
     let Some(real_home) = dirs::home_dir() else {
         return;
     };
@@ -130,41 +159,33 @@ fn sync_user_history_for_windows(home_dir: &PathBuf) {
         return;
     }
     let dst_claude = home_dir.join(".claude");
+    let src_projects = src_claude.join("projects");
+    let dst_projects = dst_claude.join("projects");
+    fs::create_dir_all(&dst_projects).ok();
 
-    // Directories to mirror (shallow copy — only files, no recursion into
-    // deeply nested sub-dirs that could be huge).
-    let dir_entries: &[&str] = &["projects", "statsCache"];
+    let target_slug = path_to_slug(working_dir);
+    info!(
+        "[history-sync] raw working_dir={}, target_slug={}",
+        working_dir, target_slug
+    );
 
-    for &name in dir_entries {
-        let src_dir = src_claude.join(name);
-        if !src_dir.is_dir() {
-            continue;
-        }
-        let dst_dir = dst_claude.join(name);
-        fs::create_dir_all(&dst_dir).ok();
-
-        // One-level deep: copy sub-directories and their direct files
-        if let Ok(entries) = fs::read_dir(&src_dir) {
+    // Step 1: Copy all project directories from real ~/.claude/projects (shallow)
+    if src_projects.is_dir() {
+        if let Ok(entries) = fs::read_dir(&src_projects) {
             for entry in entries.flatten() {
-                let ft = match entry.file_type() {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                let dst_entry = dst_dir.join(entry.file_name());
-                if ft.is_file() {
-                    if !dst_entry.exists() {
-                        fs::copy(entry.path(), &dst_entry).ok();
-                    }
-                } else if ft.is_dir() {
-                    fs::create_dir_all(&dst_entry).ok();
-                    if let Ok(sub) = fs::read_dir(entry.path()) {
-                        for sf in sub.flatten() {
-                            if sf.file_type().map(|t| t.is_file()).unwrap_or(false) {
-                                let dst_file = dst_entry.join(sf.file_name());
-                                if !dst_file.exists() {
-                                    fs::copy(sf.path(), &dst_file).ok();
-                                }
-                            }
+                if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    continue;
+                }
+                let dst_entry = dst_projects.join(entry.file_name());
+                if dst_entry.exists() {
+                    continue;
+                }
+                // Copy directory contents (one level deep — session .jsonl files)
+                fs::create_dir_all(&dst_entry).ok();
+                if let Ok(files) = fs::read_dir(entry.path()) {
+                    for f in files.flatten() {
+                        if f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                            fs::copy(f.path(), dst_entry.join(f.file_name())).ok();
                         }
                     }
                 }
@@ -172,14 +193,100 @@ fn sync_user_history_for_windows(home_dir: &PathBuf) {
         }
     }
 
-    // Single files to copy
-    for name in &["stats-cache.json"] {
-        let src_file = src_claude.join(name);
-        let dst_file = dst_claude.join(name);
-        if src_file.is_file() && !dst_file.exists() {
-            fs::copy(&src_file, &dst_file).ok();
+    // Step 2: Ensure target_slug directory exists — find case-insensitive or
+    // drive-letter alias candidates if exact match is missing
+    let target_dir = dst_projects.join(&target_slug);
+    if !target_dir.exists() {
+        info!("[history-sync] target_slug dir missing, searching candidates...");
+        let target_lower = target_slug.to_lowercase();
+
+        // Build a drive-letter alias: c-... <-> C-...
+        let alias_slug = {
+            let chars: Vec<char> = target_slug.chars().collect();
+            if chars.len() >= 2 && chars[1] == '-' && chars[0].is_ascii_alphabetic() {
+                let flipped = if chars[0].is_ascii_lowercase() {
+                    chars[0].to_ascii_uppercase()
+                } else {
+                    chars[0].to_ascii_lowercase()
+                };
+                let mut s = String::with_capacity(target_slug.len());
+                s.push(flipped);
+                s.push_str(&target_slug[1..]);
+                Some(s)
+            } else {
+                None
+            }
+        };
+
+        // Search both src and dst projects directories for a candidate
+        let search_dirs = [&src_projects, &dst_projects];
+        let mut found_candidate: Option<PathBuf> = None;
+
+        for search_dir in &search_dirs {
+            if !search_dir.is_dir() {
+                continue;
+            }
+            if let Ok(entries) = fs::read_dir(search_dir) {
+                for entry in entries.flatten() {
+                    if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                        continue;
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+
+                    // Exact alias match (drive letter case flip)
+                    if let Some(ref alias) = alias_slug {
+                        if name == *alias {
+                            info!("[history-sync] found alias candidate: {}", name);
+                            found_candidate = Some(entry.path());
+                            break;
+                        }
+                    }
+                    // Case-insensitive match
+                    if name.to_lowercase() == target_lower {
+                        info!("[history-sync] found case-insensitive candidate: {}", name);
+                        found_candidate = Some(entry.path());
+                        break;
+                    }
+                }
+            }
+            if found_candidate.is_some() {
+                break;
+            }
         }
+
+        // Copy candidate contents into the exact target_slug directory
+        if let Some(candidate) = found_candidate {
+            fs::create_dir_all(&target_dir).ok();
+            if let Ok(files) = fs::read_dir(&candidate) {
+                for f in files.flatten() {
+                    if f.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                        let dst_file = target_dir.join(f.file_name());
+                        if !dst_file.exists() {
+                            fs::copy(f.path(), &dst_file).ok();
+                        }
+                    }
+                }
+            }
+            info!(
+                "[history-sync] populated target dir from candidate: {}",
+                candidate.display()
+            );
+        } else {
+            info!("[history-sync] no candidate found — recent activity will be empty for this project");
+        }
+    } else {
+        info!("[history-sync] target_slug dir already exists");
     }
+
+    info!(
+        "[history-sync] dst projects dirs: {:?}",
+        fs::read_dir(&dst_projects)
+            .map(|rd| rd
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect::<Vec<_>>())
+            .unwrap_or_default()
+    );
 }
 
 /// Keep the launcher's isolated HOME, but import the user's Claude settings
@@ -413,7 +520,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     let vhome = isolated_home();
     let vhome_str = vhome.to_string_lossy().to_string();
 
-    let working_dir = if cfg.working_dir.is_empty() {
+    let raw_working_dir = if cfg.working_dir.is_empty() {
         dirs::home_dir()
             .unwrap_or_default()
             .to_string_lossy()
@@ -423,17 +530,30 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     };
 
     // Validate working directory exists
-    if !std::path::Path::new(&working_dir).exists() {
+    if !std::path::Path::new(&raw_working_dir).exists() {
         return Err(
             "Working directory does not exist. Please choose a valid directory in Settings."
                 .to_string(),
         );
     }
 
+    // On Windows, canonicalize to stabilize drive letter case and slash direction.
+    // This ensures the project slug matches what Claude Code will compute from cwd.
+    #[cfg(target_os = "windows")]
+    let working_dir = canonicalize_windows_path(&raw_working_dir);
+    #[cfg(not(target_os = "windows"))]
+    let working_dir = raw_working_dir;
+
+    info!(
+        "[spawn] working_dir={}, slug={}",
+        working_dir,
+        path_to_slug(&working_dir)
+    );
+
     // Windows: sync recent-activity history from real ~/.claude so the
     // "Recent activity" panel is populated.  macOS skips this entirely.
     #[cfg(target_os = "windows")]
-    sync_user_history_for_windows(&vhome);
+    sync_user_history_for_windows(&vhome, &working_dir);
 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
