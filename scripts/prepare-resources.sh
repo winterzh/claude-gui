@@ -35,30 +35,6 @@ rm -rf "$RESOURCE_DIR/node-arm64" "$RESOURCE_DIR/node-x64"
 echo "--- Verifying universal binary ---"
 file "$RESOURCE_DIR/node/bin/node"
 
-# --- uv (for MCP servers) ---
-echo "--- Downloading uv ---"
-mkdir -p "$RESOURCE_DIR/uv"
-if [ "$PLATFORM" = "darwin" ]; then
-    # Download both architectures and lipo
-    curl -fSL "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz" | tar xz -C "$RESOURCE_DIR/uv-arm64" 2>/dev/null || mkdir -p "$RESOURCE_DIR/uv-arm64"
-    curl -fSL "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz" | tar xz -C "$RESOURCE_DIR/uv-x64" 2>/dev/null || mkdir -p "$RESOURCE_DIR/uv-x64"
-    UV_ARM=$(find "$RESOURCE_DIR/uv-arm64" -name "uv" -type f | head -1)
-    UV_X64=$(find "$RESOURCE_DIR/uv-x64" -name "uv" -type f | head -1)
-    if [ -n "$UV_ARM" ] && [ -n "$UV_X64" ]; then
-        lipo -create "$UV_ARM" "$UV_X64" -output "$RESOURCE_DIR/uv/uv"
-        chmod +x "$RESOURCE_DIR/uv/uv"
-        echo "Universal uv binary created"
-    elif [ -n "$UV_ARM" ]; then
-        cp "$UV_ARM" "$RESOURCE_DIR/uv/uv"
-        chmod +x "$RESOURCE_DIR/uv/uv"
-    fi
-    rm -rf "$RESOURCE_DIR/uv-arm64" "$RESOURCE_DIR/uv-x64"
-else
-    curl -fSL "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-unknown-linux-gnu.tar.gz" | tar xz -C "$RESOURCE_DIR/uv" --strip-components=1
-fi
-# Create uvx symlink
-[ -f "$RESOURCE_DIR/uv/uv" ] && ln -sf uv "$RESOURCE_DIR/uv/uvx" 2>/dev/null || true
-
 echo "--- Installing @anthropic-ai/claude-code ---"
 cd "$RESOURCE_DIR/claude-code"
 "$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" init -y > /dev/null 2>&1

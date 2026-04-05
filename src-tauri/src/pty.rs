@@ -114,73 +114,30 @@ fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
     }
 }
 
-/// Sync the user's real ~/.claude/ directory to the isolated home.
-/// Copies everything needed for web search, OAuth, sessions, etc.
-/// but strips API keys from settings.json to use launcher's config.
-fn sync_user_claude_dir(home_dir: &PathBuf) {
-    let Some(real_home) = dirs::home_dir() else { return; };
-    let src_dir = real_home.join(".claude");
-    if !src_dir.exists() { return; }
+/// Keep the launcher's isolated HOME, but import the user's Claude settings
+/// so proxy/certificate/network env stays available inside packaged builds.
+fn sync_user_settings(home_dir: &PathBuf) {
+    let Some(real_home) = dirs::home_dir() else {
+        return;
+    };
+    let src = real_home.join(".claude").join("settings.json");
+    if !src.exists() {
+        return;
+    }
+
+    let Ok(source_text) = fs::read_to_string(&src) else {
+        return;
+    };
+    let Ok(source_json) = serde_json::from_str::<serde_json::Value>(&source_text) else {
+        return;
+    };
 
     let dst_dir = home_dir.join(".claude");
     fs::create_dir_all(&dst_dir).ok();
+    let dst = dst_dir.join("settings.json");
 
-    // Recursively copy all files from real ~/.claude/ to isolated ~/.claude/
-    fn copy_dir_recursive(src: &PathBuf, dst: &PathBuf) {
-        let Ok(entries) = fs::read_dir(src) else { return; };
-        for entry in entries.flatten() {
-            let src_path = entry.path();
-            let file_name = entry.file_name();
-            let dst_path = dst.join(&file_name);
-
-            if src_path.is_dir() {
-                // Skip conversation/session history dirs to keep isolation
-                let name = file_name.to_string_lossy();
-                if name == "projects" || name == "todos" || name == "sessions" {
-                    continue;
-                }
-                fs::create_dir_all(&dst_path).ok();
-                copy_dir_recursive(&src_path, &dst_path);
-            } else {
-                // Don't overwrite files that are newer in dst
-                let src_mod = fs::metadata(&src_path).and_then(|m| m.modified()).ok();
-                let dst_mod = fs::metadata(&dst_path).and_then(|m| m.modified()).ok();
-                if let (Some(s), Some(d)) = (src_mod, dst_mod) {
-                    if d >= s { continue; }
-                }
-                fs::copy(&src_path, &dst_path).ok();
-            }
-        }
-    }
-
-    copy_dir_recursive(&src_dir, &dst_dir);
-
-    // Strip API keys from settings.json so launcher's config takes precedence
-    let settings_path = dst_dir.join("settings.json");
-    if settings_path.exists() {
-        if let Ok(text) = fs::read_to_string(&settings_path) {
-            if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(env) = json.get_mut("env").and_then(|v| v.as_object_mut()) {
-                    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_AUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"] {
-                        env.remove(key);
-                    }
-                }
-                fs::write(&settings_path, serde_json::to_string_pretty(&json).unwrap_or_default()).ok();
-            }
-        }
-    }
-}
-
-/// Configure MCP servers based on the API provider.
-/// When using MiniMaxi, add their MCP server for web search.
-fn configure_mcp(home_dir: &PathBuf, base_url: &str, api_key: &str) {
-    let claude_dir = home_dir.join(".claude");
-    fs::create_dir_all(&claude_dir).ok();
-    let mcp_path = claude_dir.join("mcp.json");
-
-    // Read existing mcp.json or start fresh
-    let mut mcp: serde_json::Value = if mcp_path.exists() {
-        fs::read_to_string(&mcp_path)
+    let mut merged = if dst.exists() {
+        fs::read_to_string(&dst)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}))
@@ -188,53 +145,24 @@ fn configure_mcp(home_dir: &PathBuf, base_url: &str, api_key: &str) {
         serde_json::json!({})
     };
 
-    let servers = mcp.as_object_mut()
-        .unwrap()
-        .entry("mcpServers")
-        .or_insert(serde_json::json!({}));
+    merge_json(&mut merged, &source_json);
 
-    if base_url.contains("minimax") {
-        // Add MiniMaxi MCP server for web search
-        let mcp_base_path = home_dir.join("minimax_mcp_output");
-        fs::create_dir_all(&mcp_base_path).ok();
-
-        // Determine uvx command path — use bundled uv if available, else system uvx
-        let resources = crate::launcher::find_resources();
-        let uvx_cmd = if let Some(ref res) = resources {
-            let bundled = if cfg!(target_os = "windows") {
-                res.join("uv").join("uv.exe")
-            } else {
-                res.join("uv").join("uv")
-            };
-            if bundled.exists() {
-                bundled.to_string_lossy().to_string()
-            } else {
-                "uvx".to_string()
-            }
-        } else {
-            "uvx".to_string()
-        };
-
-        if let Some(s) = servers.as_object_mut() {
-            s.insert("MiniMax".to_string(), serde_json::json!({
-                "command": uvx_cmd,
-                "args": ["minimax-coding-plan-mcp"],
-                "env": {
-                    "MINIMAX_API_KEY": api_key,
-                    "MINIMAX_MCP_BASE_PATH": mcp_base_path.to_string_lossy(),
-                    "MINIMAX_API_HOST": "https://api.minimaxi.com",
-                    "MINIMAX_API_RESOURCE_MODE": "url"
-                }
-            }));
-        }
-    } else {
-        // Remove MiniMax MCP if not using minimax
-        if let Some(s) = servers.as_object_mut() {
-            s.remove("MiniMax");
+    if let Some(env) = merged.get_mut("env").and_then(|v| v.as_object_mut()) {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+            "CLAUDE_CODE_OAUTH_TOKEN",
+        ] {
+            env.remove(key);
         }
     }
 
-    fs::write(&mcp_path, serde_json::to_string_pretty(&mcp).unwrap_or_default()).ok();
+    fs::write(
+        &dst,
+        serde_json::to_string_pretty(&merged).unwrap_or_default(),
+    )
+    .ok();
 }
 
 /// Build a wrapper script that sets env vars then launches Claude Code.
@@ -289,7 +217,7 @@ fn build_launch_script(
         // PATH with bundled git and node
         if let Some(ref res) = resources {
             let mut extra: Vec<String> = Vec::new();
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
+            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
                 let p = res.join(sub);
                 if p.exists() {
                     extra.push(p.to_string_lossy().to_string());
@@ -440,8 +368,6 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
-    sync_user_claude_dir(&vhome);
-    configure_mcp(&vhome, &cfg.base_url, &cfg.api_key);
 
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -478,7 +404,7 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
         // Build PATH with bundled git/node
         let mut extra_paths: Vec<String> = Vec::new();
-        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
+        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
             let p = res.join(sub);
             if p.exists() {
                 extra_paths.push(p.to_string_lossy().to_string().replace('\\', "/"));
@@ -584,17 +510,16 @@ require("{cli}");
         c.env("FORCE_COLOR", "1");
         c.env("TERM", "xterm-256color");
 
-        // Ensure bundled node + uv are in PATH alongside system tools
+        // Ensure bundled node is in PATH alongside system tools
         if let Some(ref res) = resources {
             let node_bin_dir = res.join("node").join("bin");
-            let uv_dir = res.join("uv");
             let sys_path = std::env::var("PATH").unwrap_or_default();
+            // Add common macOS tool paths that GUI apps might miss
             c.env(
                 "PATH",
                 format!(
-                    "{}:{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
+                    "{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
                     node_bin_dir.to_string_lossy(),
-                    uv_dir.to_string_lossy(),
                     sys_path
                 ),
             );
