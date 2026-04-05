@@ -53,9 +53,12 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
 
     let obj = config.as_object_mut().unwrap();
 
-    // Skip onboarding
+    // Skip onboarding + simulate proper install
     obj.insert("hasCompletedOnboarding".into(), serde_json::json!(true));
     obj.insert("theme".into(), serde_json::json!("dark"));
+    if !obj.contains_key("installMethod") {
+        obj.insert("installMethod".into(), serde_json::json!("native"));
+    }
 
     // Pre-approve API key (hash first 20 chars like Claude Code does)
     if !api_key.is_empty() {
