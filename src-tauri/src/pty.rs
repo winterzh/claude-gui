@@ -117,6 +117,71 @@ fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
     }
 }
 
+/// Windows-only: sync recent-activity history from real ~/.claude into the
+/// isolated home so the "Recent activity" panel is populated on first launch.
+/// macOS must NOT call this — it risks triggering system permission popups.
+#[cfg(target_os = "windows")]
+fn sync_user_history_for_windows(home_dir: &PathBuf) {
+    let Some(real_home) = dirs::home_dir() else {
+        return;
+    };
+    let src_claude = real_home.join(".claude");
+    if !src_claude.exists() {
+        return;
+    }
+    let dst_claude = home_dir.join(".claude");
+
+    // Directories to mirror (shallow copy — only files, no recursion into
+    // deeply nested sub-dirs that could be huge).
+    let dir_entries: &[&str] = &["projects", "statsCache"];
+
+    for &name in dir_entries {
+        let src_dir = src_claude.join(name);
+        if !src_dir.is_dir() {
+            continue;
+        }
+        let dst_dir = dst_claude.join(name);
+        fs::create_dir_all(&dst_dir).ok();
+
+        // One-level deep: copy sub-directories and their direct files
+        if let Ok(entries) = fs::read_dir(&src_dir) {
+            for entry in entries.flatten() {
+                let ft = match entry.file_type() {
+                    Ok(t) => t,
+                    Err(_) => continue,
+                };
+                let dst_entry = dst_dir.join(entry.file_name());
+                if ft.is_file() {
+                    if !dst_entry.exists() {
+                        fs::copy(entry.path(), &dst_entry).ok();
+                    }
+                } else if ft.is_dir() {
+                    fs::create_dir_all(&dst_entry).ok();
+                    if let Ok(sub) = fs::read_dir(entry.path()) {
+                        for sf in sub.flatten() {
+                            if sf.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                                let dst_file = dst_entry.join(sf.file_name());
+                                if !dst_file.exists() {
+                                    fs::copy(sf.path(), &dst_file).ok();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Single files to copy
+    for name in &["stats-cache.json"] {
+        let src_file = src_claude.join(name);
+        let dst_file = dst_claude.join(name);
+        if src_file.is_file() && !dst_file.exists() {
+            fs::copy(&src_file, &dst_file).ok();
+        }
+    }
+}
+
 /// Keep the launcher's isolated HOME, but import the user's Claude settings
 /// so proxy/certificate/network env stays available inside packaged builds.
 fn sync_user_settings(home_dir: &PathBuf) {
@@ -337,14 +402,10 @@ cd '{working_dir}'
 
 #[tauri::command]
 pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
-    // Kill existing
+    // Gracefully stop any existing session before starting a new one
     {
         let mut pty = state.lock().map_err(|e| e.to_string())?;
-        if let Some(mut child) = pty.child.take() {
-            child.kill().ok();
-        }
-        pty.writer = None;
-        pty.master = None;
+        graceful_shutdown(&mut pty);
     }
 
     let cfg = config::load_config()?.ok_or("No config found")?;
@@ -368,6 +429,11 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
                 .to_string(),
         );
     }
+
+    // Windows: sync recent-activity history from real ~/.claude so the
+    // "Recent activity" panel is populated.  macOS skips this entirely.
+    #[cfg(target_os = "windows")]
+    sync_user_history_for_windows(&vhome);
 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
@@ -605,13 +671,38 @@ pub fn pty_resize(
     Ok(())
 }
 
-#[tauri::command]
-pub fn kill_claude(state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
-    let mut pty = state.lock().map_err(|e| e.to_string())?;
+/// Try graceful shutdown first (send "exit\n" + short wait), then force-kill.
+fn graceful_shutdown(pty: &mut PtyState) {
+    // Try sending "exit\n" through the PTY writer
+    if let Some(ref mut w) = pty.writer {
+        let _ = w.write_all(b"\nexit\n");
+        let _ = w.flush();
+    }
+
+    // Give the process a moment to exit on its own
+    if let Some(ref mut child) = pty.child {
+        for _ in 0..20 {
+            // 20 × 50ms = 1s max
+            match child.try_wait() {
+                Ok(Some(_)) => break, // exited
+                Ok(None) => {}        // still running
+                Err(_) => break,      // can't query — bail
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    // Force-kill if still alive, then clean up handles
     if let Some(mut child) = pty.child.take() {
         child.kill().ok();
     }
     pty.writer = None;
     pty.master = None;
+}
+
+#[tauri::command]
+pub fn kill_claude(state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
+    let mut pty = state.lock().map_err(|e| e.to_string())?;
+    graceful_shutdown(&mut pty);
     Ok(())
 }
