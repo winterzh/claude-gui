@@ -129,6 +129,94 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
     .ok();
 }
 
+/// When base_url contains "minimax" (case-insensitive), write MiniMax MCP
+/// server config into the isolated home's settings.json so Claude Code can
+/// use web_search and understand_image tools.
+/// When base_url does NOT contain "minimax", remove the MiniMax MCP entry.
+fn configure_minimax_mcp(
+    home_dir: &PathBuf,
+    base_url: &str,
+    api_key: &str,
+    resources: &Option<PathBuf>,
+) {
+    let settings_dir = home_dir.join(".claude");
+    fs::create_dir_all(&settings_dir).ok();
+    let settings_path = settings_dir.join("settings.json");
+
+    let mut settings: serde_json::Value = if settings_path.exists() {
+        fs::read_to_string(&settings_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_else(|| serde_json::json!({}))
+    } else {
+        serde_json::json!({})
+    };
+
+    let is_minimax = base_url.to_lowercase().contains("minimax");
+    let obj = settings.as_object_mut().unwrap();
+    let servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
+
+    if is_minimax {
+        // Determine the uv executable path — prefer bundled, fall back to system uvx
+        let uv_exe = if cfg!(target_os = "windows") {
+            resources
+                .as_ref()
+                .map(|res| res.join("uv").join("uv.exe"))
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().to_string().replace('\\', "/"))
+        } else {
+            resources
+                .as_ref()
+                .map(|res| res.join("uv").join("bin").join("uv"))
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().to_string())
+        };
+
+        let (cmd, args) = match uv_exe {
+            Some(path) => (path, vec!["tool", "run", "minimax-coding-plan-mcp"]),
+            None => ("uvx".to_string(), vec!["minimax-coding-plan-mcp"]),
+        };
+
+        let mcp_entry = serde_json::json!({
+            "command": cmd,
+            "args": args,
+            "env": {
+                "MINIMAX_API_KEY": api_key,
+                "MINIMAX_API_HOST": "https://api.minimaxi.com"
+            }
+        });
+
+        if let Some(server_map) = servers.as_object_mut() {
+            server_map.insert("MiniMax".to_string(), mcp_entry);
+        }
+        info!("[mcp] MiniMax MCP enabled (command={})", cmd);
+    } else {
+        // Remove MiniMax MCP when not using MiniMaxi relay
+        if let Some(server_map) = servers.as_object_mut() {
+            if server_map.remove("MiniMax").is_some() {
+                info!("[mcp] MiniMax MCP removed (base_url is not minimax)");
+            }
+        }
+    }
+
+    // Strip any API keys/URLs that might have leaked into env section
+    if let Some(env) = obj.get_mut("env").and_then(|v| v.as_object_mut()) {
+        for key in [
+            "ANTHROPIC_API_KEY",
+            "ANTHROPIC_BASE_URL",
+            "ANTHROPIC_AUTH_TOKEN",
+        ] {
+            env.remove(key);
+        }
+    }
+
+    fs::write(
+        &settings_path,
+        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+    )
+    .ok();
+}
+
 fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
     match (dst, src) {
         (serde_json::Value::Object(dst_obj), serde_json::Value::Object(src_obj)) => {
@@ -558,6 +646,11 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
     // Pre-configure .claude.json: skip onboarding, trust workspace, approve API key
     write_claude_config(&vhome, &working_dir, &cfg.api_key);
 
+    let resources = find_resources();
+
+    // Auto-configure MiniMax MCP when using MiniMaxi relay
+    configure_minimax_mcp(&vhome, &cfg.base_url, &cfg.api_key, &resources);
+
     let pty_system = native_pty_system();
     let pair = pty_system
         .openpty(PtySize {
@@ -567,8 +660,6 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
             pixel_height: 0,
         })
         .map_err(|e| e.to_string())?;
-
-    let resources = find_resources();
 
     // On Windows: write a Node.js wrapper that sets process.env then runs Claude Code.
     // This bypasses all OS/PTY env var issues entirely.
@@ -591,9 +682,9 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
             );
         }
 
-        // Build PATH with bundled git/node
+        // Build PATH with bundled git/node/uv
         let mut extra_paths: Vec<String> = Vec::new();
-        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
+        for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
             let p = res.join(sub);
             if p.exists() {
                 extra_paths.push(p.to_string_lossy().to_string().replace('\\', "/"));
@@ -699,16 +790,18 @@ require("{cli}");
         c.env("FORCE_COLOR", "1");
         c.env("TERM", "xterm-256color");
 
-        // Ensure bundled node is in PATH alongside system tools
+        // Ensure bundled node + uv are in PATH alongside system tools
         if let Some(ref res) = resources {
             let node_bin_dir = res.join("node").join("bin");
+            let uv_bin_dir = res.join("uv").join("bin");
             let sys_path = std::env::var("PATH").unwrap_or_default();
             // Add common macOS tool paths that GUI apps might miss
             c.env(
                 "PATH",
                 format!(
-                    "{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
+                    "{}:{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
                     node_bin_dir.to_string_lossy(),
+                    uv_bin_dir.to_string_lossy(),
                     sys_path
                 ),
             );

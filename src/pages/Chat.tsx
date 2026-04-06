@@ -203,7 +203,7 @@ export default function Chat({ onSettings }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", background: T.bg, gap: 24 }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: T.text }}>Claude Code Launcher</h1>
-      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v0.9.5</span>
+      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v0.9.6</span>
 
       {/* Connection status */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

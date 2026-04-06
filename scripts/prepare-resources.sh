@@ -35,6 +35,24 @@ rm -rf "$RESOURCE_DIR/node-arm64" "$RESOURCE_DIR/node-x64"
 echo "--- Verifying universal binary ---"
 file "$RESOURCE_DIR/node/bin/node"
 
+# --- uv (Python package runner for MCP servers) ---
+echo "--- Downloading uv (arm64) ---"
+mkdir -p /tmp/uv-arm64 /tmp/uv-x64 "$RESOURCE_DIR/uv/bin"
+curl -fSL "https://github.com/astral-sh/uv/releases/latest/download/uv-aarch64-apple-darwin.tar.gz" | tar xz -C /tmp/uv-arm64
+
+echo "--- Downloading uv (x64) ---"
+curl -fSL "https://github.com/astral-sh/uv/releases/latest/download/uv-x86_64-apple-darwin.tar.gz" | tar xz -C /tmp/uv-x64
+
+echo "--- Creating universal uv binary ---"
+# uv tarballs extract to uv-*/uv
+UV_ARM64=$(find /tmp/uv-arm64 -name uv -type f | head -1)
+UV_X64=$(find /tmp/uv-x64 -name uv -type f | head -1)
+lipo -create "$UV_ARM64" "$UV_X64" -output "$RESOURCE_DIR/uv/bin/uv"
+chmod +x "$RESOURCE_DIR/uv/bin/uv"
+rm -rf /tmp/uv-arm64 /tmp/uv-x64
+echo "--- Verifying universal uv binary ---"
+file "$RESOURCE_DIR/uv/bin/uv"
+
 echo "--- Installing @anthropic-ai/claude-code ---"
 cd "$RESOURCE_DIR/claude-code"
 "$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" init -y > /dev/null 2>&1
