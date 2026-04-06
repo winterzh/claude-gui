@@ -130,8 +130,10 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
 }
 
 /// When base_url contains "minimax" (case-insensitive), write MiniMax MCP
-/// server config into the isolated home's settings.json so Claude Code can
+/// server config into the isolated home's `.claude.json` so Claude Code can
 /// use web_search and understand_image tools.
+/// NOTE: Claude Code reads user-scope mcpServers from `.claude.json`, NOT
+/// from `settings.json`.
 /// When base_url does NOT contain "minimax", remove the MiniMax MCP entry.
 fn configure_minimax_mcp(
     home_dir: &PathBuf,
@@ -139,12 +141,11 @@ fn configure_minimax_mcp(
     api_key: &str,
     resources: &Option<PathBuf>,
 ) {
-    let settings_dir = home_dir.join(".claude");
-    fs::create_dir_all(&settings_dir).ok();
-    let settings_path = settings_dir.join("settings.json");
+    // Claude Code reads user-scope MCP servers from $HOME/.claude.json
+    let claude_json = home_dir.join(".claude.json");
 
-    let mut settings: serde_json::Value = if settings_path.exists() {
-        fs::read_to_string(&settings_path)
+    let mut config: serde_json::Value = if claude_json.exists() {
+        fs::read_to_string(&claude_json)
             .ok()
             .and_then(|s| serde_json::from_str(&s).ok())
             .unwrap_or_else(|| serde_json::json!({}))
@@ -153,7 +154,7 @@ fn configure_minimax_mcp(
     };
 
     let is_minimax = base_url.to_lowercase().contains("minimax");
-    let obj = settings.as_object_mut().unwrap();
+    let obj = config.as_object_mut().unwrap();
     let servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
 
     if is_minimax {
@@ -199,22 +200,29 @@ fn configure_minimax_mcp(
         }
     }
 
-    // Strip any API keys/URLs that might have leaked into env section
-    if let Some(env) = obj.get_mut("env").and_then(|v| v.as_object_mut()) {
-        for key in [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_AUTH_TOKEN",
-        ] {
-            env.remove(key);
-        }
-    }
-
     fs::write(
-        &settings_path,
-        serde_json::to_string_pretty(&settings).unwrap_or_default(),
+        &claude_json,
+        serde_json::to_string_pretty(&config).unwrap_or_default(),
     )
     .ok();
+
+    // Also clean up the old settings.json mcpServers if we previously wrote there
+    let settings_path = home_dir.join(".claude").join("settings.json");
+    if settings_path.exists() {
+        if let Ok(text) = fs::read_to_string(&settings_path) {
+            if let Ok(mut sval) = serde_json::from_str::<serde_json::Value>(&text) {
+                if let Some(obj) = sval.as_object_mut() {
+                    if obj.remove("mcpServers").is_some() {
+                        fs::write(
+                            &settings_path,
+                            serde_json::to_string_pretty(&sval).unwrap_or_default(),
+                        )
+                        .ok();
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
