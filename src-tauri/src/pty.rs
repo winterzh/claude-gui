@@ -156,12 +156,34 @@ fn configure_minimax_mcp(
         &claude_json
     };
 
+    let is_minimax = base_url.to_lowercase().contains("minimax");
+
+    // Debug log for troubleshooting MCP activation issues
+    let debug_path = home_dir.join(".mcp-debug.log");
+    let debug_info = format!(
+        "=== MCP Debug ===\nbase_url: {}\nis_minimax: {}\nconfig_json exists: {}\nclaude_json exists: {}\nactive_path: {:?}\n\n",
+        base_url,
+        is_minimax,
+        config_json.exists(),
+        claude_json.exists(),
+        active_path,
+    );
+    {
+        use std::io::Write as _;
+        if let Ok(mut f) = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&debug_path)
+        {
+            let _ = f.write_all(debug_info.as_bytes());
+        }
+    }
+
     let mut config: serde_json::Value = fs::read_to_string(active_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
 
-    let is_minimax = base_url.to_lowercase().contains("minimax");
     let obj = config.as_object_mut().unwrap();
 
     if is_minimax {
