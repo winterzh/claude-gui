@@ -63,6 +63,7 @@ export default function Setup({ onSaved }: Props) {
     if (p) { setApiKey(p.api_key); setBaseUrl(p.base_url); }
     setEditingKey(false);
     setEditingUrl(false);
+    setShowKey(false);
     setTestResult(null);
     setError("");
   };
@@ -174,9 +175,19 @@ export default function Setup({ onSaved }: Props) {
     setTimeout(() => setSecretResult(null), 3000);
   };
 
+  const [showKey, setShowKey] = useState(false);
+
+  // A profile is "preset" (from activation code) if its key+url match any SECRETS entry
+  const isPresetProfile = (name: string): boolean => {
+    const p = profiles.find((x) => x.name === name);
+    if (!p) return false;
+    return Object.values(SECRETS).some((s) => s.api_key === p.api_key && s.base_url === p.base_url);
+  };
+
   const shadow = isDark ? "0 8px 32px rgba(0,0,0,0.3)" : "0 8px 32px rgba(0,0,0,0.08)";
   const currentKey = profiles.find((p) => p.name === activeProfile)?.api_key || apiKey;
   const currentUrl = profiles.find((p) => p.name === activeProfile)?.base_url || baseUrl;
+  const isPreset = isPresetProfile(activeProfile);
 
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, background: T.bg, overflowY: "auto" }}>
@@ -207,35 +218,54 @@ export default function Setup({ onSaved }: Props) {
           </div>
         </div>
 
-        {/* API Key - masked */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={labelStyle(T)}>{t(lang, "apiKey")}</label>
-          {editingKey ? (
-            <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoFocus
-              placeholder={lang === "zh" ? "输入 API Key" : "Enter API Key"}
-              style={inputStyle(T)} />
-          ) : (
-            <div onClick={() => { setEditingKey(true); setApiKey(""); }}
-              style={{ ...inputStyle(T), cursor: "pointer", color: currentKey ? T.text : T.textMuted }}>
-              {currentKey ? mask(currentKey) : (lang === "zh" ? "点击输入 Key" : "Click to enter Key")}
+        {/* API Key + Base URL: hidden for preset profiles, editable for custom */}
+        {isPreset ? (
+          <div style={{ marginBottom: 16, padding: "12px 14px", borderRadius: 8, background: T.bg, border: `1px solid ${T.border}` }}>
+            <span style={{ fontSize: 13, color: T.textMuted }}>
+              {lang === "zh" ? "已通过激活码配置，无需手动设置" : "Configured via activation code"}
+            </span>
+          </div>
+        ) : (
+          <>
+            {/* API Key */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle(T)}>{t(lang, "apiKey")}</label>
+              {editingKey ? (
+                <input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} autoFocus
+                  placeholder={lang === "zh" ? "输入 API Key" : "Enter API Key"}
+                  style={inputStyle(T)} />
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+                  <div onClick={() => { setEditingKey(true); setApiKey(""); }}
+                    style={{ ...inputStyle(T), flex: 1, cursor: "pointer", color: currentKey ? T.text : T.textMuted, borderRadius: "8px 0 0 8px" }}>
+                    {currentKey ? (showKey ? currentKey : mask(currentKey)) : (lang === "zh" ? "点击输入 Key" : "Click to enter Key")}
+                  </div>
+                  {currentKey && (
+                    <button onClick={(e) => { e.stopPropagation(); setShowKey(!showKey); }}
+                      style={{ padding: "10px 10px", borderRadius: "0 8px 8px 0", border: `1px solid ${T.border}`, borderLeft: "none", background: T.bg, color: T.textMuted, cursor: "pointer", fontSize: 12, whiteSpace: "nowrap" }}>
+                      {showKey ? (lang === "zh" ? "隐藏" : "Hide") : (lang === "zh" ? "显示" : "Show")}
+                    </button>
+                  )}
+                </div>
+              )}
             </div>
-          )}
-        </div>
 
-        {/* Base URL - masked */}
-        <div style={{ marginBottom: 16 }}>
-          <label style={labelStyle(T)}>{t(lang, "baseUrl")}</label>
-          {editingUrl ? (
-            <input type="password" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoFocus
-              placeholder={lang === "zh" ? "输入 Base URL" : "Enter Base URL"}
-              style={inputStyle(T)} />
-          ) : (
-            <div onClick={() => { setEditingUrl(true); setBaseUrl(""); }}
-              style={{ ...inputStyle(T), cursor: "pointer", color: currentUrl ? T.text : T.textMuted }}>
-              {currentUrl ? mask(currentUrl) : (lang === "zh" ? "点击输入 URL" : "Click to enter URL")}
+            {/* Base URL - shown in plain text */}
+            <div style={{ marginBottom: 16 }}>
+              <label style={labelStyle(T)}>{t(lang, "baseUrl")}</label>
+              {editingUrl ? (
+                <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoFocus
+                  placeholder={lang === "zh" ? "输入 Base URL" : "Enter Base URL"}
+                  style={inputStyle(T)} />
+              ) : (
+                <div onClick={() => { setEditingUrl(true); setBaseUrl(currentUrl); }}
+                  style={{ ...inputStyle(T), cursor: "pointer", color: currentUrl ? T.text : T.textMuted }}>
+                  {currentUrl || (lang === "zh" ? "点击输入 URL" : "Click to enter URL")}
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </>
+        )}
 
         {/* Language + Theme */}
         <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>

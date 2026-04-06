@@ -314,7 +314,7 @@ dependencies = [
 
 [[package]]
 name = "claude-launcher"
-version = "0.9.5"
+version = "0.9.6"
 dependencies = [
  "dirs",
  "log",

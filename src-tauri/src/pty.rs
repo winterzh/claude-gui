@@ -200,6 +200,16 @@ fn configure_minimax_mcp(
         }
     }
 
+    // Remove the mcpServers key entirely if it's empty
+    if obj
+        .get("mcpServers")
+        .and_then(|v| v.as_object())
+        .map(|m| m.is_empty())
+        .unwrap_or(false)
+    {
+        obj.remove("mcpServers");
+    }
+
     fs::write(
         &claude_json,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
