@@ -65,19 +65,22 @@ fn canonicalize_windows_path(path: &str) -> String {
     chars.into_iter().collect()
 }
 
-/// Write .claude.json with onboarding complete, workspace trust, and API key approval
+/// Write config with onboarding complete, workspace trust, and API key approval.
+/// Claude Code prefers .claude/.config.json if it exists, otherwise .claude.json.
 fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
+    let config_json = home_dir.join(".claude").join(".config.json");
     let claude_json = home_dir.join(".claude.json");
+    let active_path = if config_json.exists() {
+        &config_json
+    } else {
+        &claude_json
+    };
 
     // Read existing config or start fresh
-    let mut config: serde_json::Value = if claude_json.exists() {
-        fs::read_to_string(&claude_json)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
+    let mut config: serde_json::Value = fs::read_to_string(active_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let obj = config.as_object_mut().unwrap();
 
@@ -123,41 +126,47 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
     }
 
     fs::write(
-        &claude_json,
+        active_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     )
     .ok();
 }
 
 /// When base_url contains "minimax" (case-insensitive), write MiniMax MCP
-/// server config into the isolated home's `.claude.json` so Claude Code can
-/// use web_search and understand_image tools.
-/// NOTE: Claude Code reads user-scope mcpServers from `.claude.json`, NOT
-/// from `settings.json`.
+/// server config so Claude Code can use web_search and understand_image tools.
 /// When base_url does NOT contain "minimax", remove the MiniMax MCP entry.
+///
+/// Claude Code picks its config from whichever file exists first:
+///   1. $HOME/.claude/.config.json  (preferred if present)
+///   2. $HOME/.claude.json          (fallback)
+/// We must update the ACTIVE file and clean up ALL possible locations.
 fn configure_minimax_mcp(
     home_dir: &PathBuf,
     base_url: &str,
     api_key: &str,
     resources: &Option<PathBuf>,
 ) {
-    // Claude Code reads user-scope MCP servers from $HOME/.claude.json
+    let config_json = home_dir.join(".claude").join(".config.json");
     let claude_json = home_dir.join(".claude.json");
 
-    let mut config: serde_json::Value = if claude_json.exists() {
-        fs::read_to_string(&claude_json)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
+    // Claude Code prefers .claude/.config.json if it exists
+    let active_path = if config_json.exists() {
+        &config_json
     } else {
-        serde_json::json!({})
+        &claude_json
     };
+
+    let mut config: serde_json::Value = fs::read_to_string(active_path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
 
     let is_minimax = base_url.to_lowercase().contains("minimax");
     let obj = config.as_object_mut().unwrap();
-    let servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
 
     if is_minimax {
+        let servers = obj.entry("mcpServers").or_insert(serde_json::json!({}));
+
         // Determine the uv executable path — prefer bundled, fall back to system uvx
         let uv_exe = if cfg!(target_os = "windows") {
             resources
@@ -190,45 +199,64 @@ fn configure_minimax_mcp(
         if let Some(server_map) = servers.as_object_mut() {
             server_map.insert("MiniMax".to_string(), mcp_entry);
         }
-        info!("[mcp] MiniMax MCP enabled (command={})", cmd);
+        info!("[mcp] MiniMax MCP enabled in {:?}", active_path);
     } else {
-        // Remove MiniMax MCP when not using MiniMaxi relay
-        if let Some(server_map) = servers.as_object_mut() {
-            if server_map.remove("MiniMax").is_some() {
-                info!("[mcp] MiniMax MCP removed (base_url is not minimax)");
-            }
+        // Remove MiniMax MCP from the active config
+        if let Some(servers) = obj.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+            servers.remove("MiniMax");
         }
-    }
-
-    // Remove the mcpServers key entirely if it's empty
-    if obj
-        .get("mcpServers")
-        .and_then(|v| v.as_object())
-        .map(|m| m.is_empty())
-        .unwrap_or(false)
-    {
-        obj.remove("mcpServers");
+        // Remove the mcpServers key entirely if it's empty
+        if obj
+            .get("mcpServers")
+            .and_then(|v| v.as_object())
+            .map(|m| m.is_empty())
+            .unwrap_or(false)
+        {
+            obj.remove("mcpServers");
+        }
+        info!("[mcp] MiniMax MCP removed from {:?}", active_path);
     }
 
     fs::write(
-        &claude_json,
+        active_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
     )
     .ok();
 
-    // Also clean up the old settings.json mcpServers if we previously wrote there
-    let settings_path = home_dir.join(".claude").join("settings.json");
-    if settings_path.exists() {
-        if let Ok(text) = fs::read_to_string(&settings_path) {
-            if let Ok(mut sval) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(obj) = sval.as_object_mut() {
-                    if obj.remove("mcpServers").is_some() {
-                        fs::write(
-                            &settings_path,
-                            serde_json::to_string_pretty(&sval).unwrap_or_default(),
-                        )
-                        .ok();
+    // Also clean up MiniMax MCP from ALL other config files to prevent stale entries
+    let other_paths = [
+        &config_json,
+        &claude_json,
+        &home_dir.join(".claude").join("settings.json"),
+    ];
+    for path in &other_paths {
+        if *path == active_path || !path.exists() {
+            continue;
+        }
+        if let Ok(text) = fs::read_to_string(path) {
+            if let Ok(mut val) = serde_json::from_str::<serde_json::Value>(&text) {
+                let mut changed = false;
+                if let Some(obj) = val.as_object_mut() {
+                    if let Some(servers) = obj.get_mut("mcpServers").and_then(|v| v.as_object_mut())
+                    {
+                        if servers.remove("MiniMax").is_some() {
+                            changed = true;
+                        }
                     }
+                    // Remove empty mcpServers
+                    if obj
+                        .get("mcpServers")
+                        .and_then(|v| v.as_object())
+                        .map(|m| m.is_empty())
+                        .unwrap_or(false)
+                    {
+                        obj.remove("mcpServers");
+                        changed = true;
+                    }
+                }
+                if changed {
+                    fs::write(path, serde_json::to_string_pretty(&val).unwrap_or_default()).ok();
+                    info!("[mcp] cleaned up MiniMax MCP from {:?}", path);
                 }
             }
         }
