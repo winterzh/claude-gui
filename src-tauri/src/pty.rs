@@ -158,25 +158,10 @@ fn configure_minimax_mcp(
 
     let is_minimax = base_url.to_lowercase().contains("minimax");
 
-    // Debug helper
-    let debug_path = home_dir.join(".mcp-debug.log");
-    let mut dbg = Vec::<String>::new();
-    dbg.push(format!("=== MCP Debug ==="));
-    dbg.push(format!("base_url: {}", base_url));
-    dbg.push(format!("is_minimax: {}", is_minimax));
-    dbg.push(format!("active_path: {:?}", active_path));
-
     let mut config: serde_json::Value = fs::read_to_string(active_path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-
-    // Log mcpServers BEFORE modification
-    let before = config
-        .get("mcpServers")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "<none>".to_string());
-    dbg.push(format!("mcpServers BEFORE: {}", before));
 
     let obj = config.as_object_mut().unwrap();
 
@@ -217,15 +202,12 @@ fn configure_minimax_mcp(
         if let Some(server_map) = servers.as_object_mut() {
             server_map.insert("MiniMax".to_string(), mcp_entry);
         }
-        dbg.push("action: ADDED MiniMax".to_string());
+        info!("[mcp] MiniMax MCP enabled in {:?}", active_path);
     } else {
         // Remove MiniMax MCP from the active config
-        let removed = obj
-            .get_mut("mcpServers")
-            .and_then(|v| v.as_object_mut())
-            .and_then(|m| m.remove("MiniMax"))
-            .is_some();
-        dbg.push(format!("action: REMOVE (found_and_removed={})", removed));
+        if let Some(servers) = obj.get_mut("mcpServers").and_then(|v| v.as_object_mut()) {
+            servers.remove("MiniMax");
+        }
         // Remove the mcpServers key entirely if it's empty
         if obj
             .get("mcpServers")
@@ -235,43 +217,14 @@ fn configure_minimax_mcp(
         {
             obj.remove("mcpServers");
         }
+        info!("[mcp] MiniMax MCP removed from {:?}", active_path);
     }
 
-    // Log mcpServers AFTER modification
-    let after = config
-        .get("mcpServers")
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "<none>".to_string());
-    dbg.push(format!("mcpServers AFTER: {}", after));
-
-    let write_result = fs::write(
+    fs::write(
         active_path,
         serde_json::to_string_pretty(&config).unwrap_or_default(),
-    );
-    dbg.push(format!("write result: {:?}", write_result));
-
-    // Verify: re-read the file to confirm what's on disk
-    let verify = fs::read_to_string(active_path)
-        .ok()
-        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
-        .and_then(|v| v.get("mcpServers").cloned())
-        .map(|v| v.to_string())
-        .unwrap_or_else(|| "<none>".to_string());
-    dbg.push(format!("mcpServers ON DISK after write: {}", verify));
-    dbg.push(String::new());
-
-    // Write debug log
-    {
-        use std::io::Write as _;
-        if let Ok(mut f) = fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&debug_path)
-        {
-            let _ = f.write_all(dbg.join("\n").as_bytes());
-            let _ = f.write_all(b"\n");
-        }
-    }
+    )
+    .ok();
 
     // Also clean up MiniMax MCP from ALL other config files to prevent stale entries
     let other_paths = [
