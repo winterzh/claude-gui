@@ -30,6 +30,18 @@ jobs:
         with:
           workspaces: src-tauri
 
+      - name: Write packaging config
+        if: ${{ env.PACKAGING_CONFIG != '' }}
+        env:
+          PACKAGING_CONFIG: ${{ secrets.PACKAGING_CONFIG }}
+        run: |
+          New-Item -ItemType Directory -Force -Path config-packaging | Out-Null
+          $env:PACKAGING_CONFIG | Out-File -Encoding utf8 config-packaging/config.json
+
+      - name: Apply packaging config
+        if: ${{ hashFiles('config-packaging/config.json') != '' }}
+        run: node scripts/apply-packaging-config.mjs
+
       - name: Install frontend dependencies
         run: npm install
 

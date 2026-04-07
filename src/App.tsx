@@ -30,7 +30,7 @@ function App() {
     return localStorage.getItem("theme") !== "light";
   });
   const [lang, setLang] = useState<Lang>(() => {
-    return (localStorage.getItem("lang") as Lang) || "zh";
+    return (localStorage.getItem("lang") as Lang) || __PACKAGING_CONFIG__?.defaults?.language || "zh";
   });
 
   const theme = isDark ? darkTheme : lightTheme;
@@ -51,11 +51,9 @@ function App() {
   useEffect(() => {
     invoke<{ api_key: string; base_url: string } | null>("load_config").then(
       (config) => {
-        if (config && config.api_key) {
-          setPage("chat");
-        } else {
-          setPage("setup");
-        }
+        const nextPage = config && config.api_key ? "chat" : "setup";
+        // Show splash for at least 1 second after config loads
+        setTimeout(() => setPage(nextPage), 1000);
       },
     );
   }, []);
@@ -69,8 +67,13 @@ function App() {
   return (
     <AppContext.Provider value={{ theme, isDark, toggleTheme, lang, setLang: handleSetLang }}>
       {page === "loading" && (
-        <div className="loading" style={{ color: theme.textMuted }}>
-          Loading...
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "center",
+          height: "100vh", background: theme.bg,
+        }}>
+          <img src="/splash.png" alt="" style={{
+            maxWidth: "80%", maxHeight: "80%", objectFit: "contain",
+          }} />
         </div>
       )}
       {page === "setup" && <Setup onSaved={() => setPage("chat")} />}

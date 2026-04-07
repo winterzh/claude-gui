@@ -1,6 +1,6 @@
 const translations = {
   en: {
-    appName: "Claude Code Launcher",
+    appName: __PACKAGING_CONFIG__?.appName || "Claude Code Launcher",
     settings: "Settings",
     skills: "Skills",
     chats: "Chat History",
@@ -47,7 +47,7 @@ const translations = {
     messages: "messages",
   },
   zh: {
-    appName: "Claude Code Launcher",
+    appName: __PACKAGING_CONFIG__?.appName || "Claude Code Launcher",
     settings: "设置",
     skills: "技能",
     chats: "对话历史",

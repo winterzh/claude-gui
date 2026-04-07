@@ -7,7 +7,7 @@ use crate::config;
 fn isolated_home() -> Result<PathBuf, String> {
     let dir = dirs::home_dir()
         .unwrap_or_default()
-        .join(".claude-launcher")
+        .join(env!("ISOLATION_DIR"))
         .join("home");
     fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     fs::create_dir_all(dir.join(".claude")).ok();

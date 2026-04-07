@@ -40,7 +40,7 @@ fn default_config() -> AppConfig {
 fn config_path() -> PathBuf {
     let config_dir = dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("claude-launcher");
+        .join(env!("CONFIG_DIR_NAME"));
     fs::create_dir_all(&config_dir).ok();
     config_dir.join("config.json")
 }

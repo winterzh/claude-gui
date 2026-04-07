@@ -31,7 +31,7 @@ pub type SharedPtyState = Arc<Mutex<PtyState>>;
 fn isolated_home() -> PathBuf {
     let dir = dirs::home_dir()
         .unwrap_or_default()
-        .join(".claude-launcher")
+        .join(env!("ISOLATION_DIR"))
         .join("home");
     fs::create_dir_all(&dir).ok();
     fs::create_dir_all(dir.join(".claude")).ok();

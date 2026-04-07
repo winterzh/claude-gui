@@ -159,10 +159,11 @@ export default function Setup({ onSaved }: Props) {
     setSecretResult({ ok: true, msg });
   };
 
-  const SECRETS: Record<string, Profile & { msg_zh: string; msg_en: string }> = {
+  const DEFAULT_SECRETS: Record<string, Profile & { msg_zh: string; msg_en: string }> = {
     cclxy01: { name: "anthropic", api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc", base_url: "https://api.minimaxi.com/anthropic", msg_zh: "已添加 anthropic 配置", msg_en: "Added anthropic profile" },
     cclxy02: { name: "pincc", api_key: "sk-ec4a1f370b6abd167191536c3f2441ad2d4a45d65c40cae4ca76039aa0caa011", base_url: "https://v2.pincc.ai", msg_zh: "已添加 pincc 配置", msg_en: "Added pincc profile" },
   };
+  const SECRETS = __PACKAGING_CONFIG__?.activationCodes || DEFAULT_SECRETS;
 
   const handleSecret = () => {
     const s = SECRETS[secretCode.trim()];
@@ -192,7 +193,7 @@ export default function Setup({ onSaved }: Props) {
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, background: T.bg, overflowY: "auto" }}>
       <div style={{ background: T.bgSecondary, borderRadius: 12, padding: 36, width: "100%", maxWidth: 500, boxShadow: shadow }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: T.text, marginBottom: 4 }}>Claude Code Launcher</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: T.text, marginBottom: 4 }}>{t(lang, "appName")}</h1>
         <p style={{ fontSize: 13, color: T.textMuted, marginBottom: 24 }}>{t(lang, "configTitle")}</p>
 
         {/* Profiles */}
