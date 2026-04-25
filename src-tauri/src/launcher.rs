@@ -1,20 +1,23 @@
-use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::config;
-
-fn isolated_home() -> Result<PathBuf, String> {
-    let dir = dirs::home_dir()
-        .unwrap_or_default()
-        .join(env!("ISOLATION_DIR"))
-        .join("home");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    fs::create_dir_all(dir.join(".claude")).ok();
-    Ok(dir)
+/// Path to the bundled Claude Code executable (relative to a resources dir).
+/// Since 2.1.x, `@anthropic-ai/claude-code` ships as a native binary; the
+/// postinstall script copies the platform binary over `bin/claude.exe`. The
+/// `.exe` name is preserved on every OS so the path stays cross-platform.
+pub fn claude_binary_rel() -> PathBuf {
+    PathBuf::from("claude-code")
+        .join("node_modules")
+        .join("@anthropic-ai")
+        .join("claude-code")
+        .join("bin")
+        .join("claude.exe")
 }
 
-/// Find bundled resources directory
+/// Find bundled resources directory.
+/// Validates that the Claude Code native binary actually exists — not just
+/// the directory shell. This prevents stale empty `target/debug/resources/`
+/// from masking the real source dir.
 pub fn find_resources() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
         .ok()
@@ -28,145 +31,14 @@ pub fn find_resources() -> Option<PathBuf> {
         PathBuf::from("src-tauri/resources"),   // CWD
     ];
 
+    let bin_rel = claude_binary_rel();
+
     for c in &candidates {
-        if c.join("node").exists() && c.join("claude-code").exists() {
+        if c.join(&bin_rel).exists() {
             return Some(c.clone());
         }
     }
     None
-}
-
-#[tauri::command]
-pub fn launch_claude_code() -> Result<(), String> {
-    let cfg = config::load_config()?.ok_or("No config found. Please configure first.")?;
-
-    let working_dir = if cfg.working_dir.is_empty() {
-        dirs::home_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string()
-    } else {
-        cfg.working_dir.clone()
-    };
-
-    let vhome = isolated_home()?;
-    let vhome_str = vhome.to_string_lossy().to_string();
-    let resources = find_resources();
-
-    // Build the claude command depending on whether we have bundled resources
-    let claude_cmd = if let Some(ref res) = resources {
-        if cfg!(target_os = "windows") {
-            let node = res.join("node").join("node.exe");
-            let cli = res
-                .join("claude-code")
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("cli.js");
-            format!(
-                "\"{}\" \"{}\"",
-                node.to_string_lossy(),
-                cli.to_string_lossy()
-            )
-        } else {
-            let node = res.join("node").join("bin").join("node");
-            let cli = res
-                .join("claude-code")
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("cli.js");
-            format!("'{}' '{}'", node.to_string_lossy(), cli.to_string_lossy())
-        }
-    } else {
-        // Fallback: use system npx
-        "npx @anthropic-ai/claude-code".to_string()
-    };
-
-    if cfg!(target_os = "macos") {
-        let script_path = vhome.join("_launch.sh");
-        let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
-            vhome_str.replace("'", "'\\''"),
-            cfg.api_key.replace("'", "'\\''"),
-            cfg.base_url.replace("'", "'\\''"),
-            working_dir.replace("'", "'\\''"),
-            claude_cmd,
-        );
-        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-        Command::new("chmod")
-            .args(["+x", &script_path.to_string_lossy()])
-            .output()
-            .ok();
-        Command::new("open")
-            .args(["-a", "Terminal", &script_path.to_string_lossy()])
-            .spawn()
-            .map_err(|e| format!("Failed to open Terminal: {}", e))?;
-    } else if cfg!(target_os = "windows") {
-        let script_path = vhome.join("_launch.sh");
-        let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport USERPROFILE='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\nclear\n{}\n",
-            vhome_str.replace('\\', "/"),
-            vhome_str.replace('\\', "/"),
-            cfg.api_key,
-            cfg.base_url,
-            working_dir.replace('\\', "/"),
-            claude_cmd.replace('\\', "/"),
-        );
-        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-
-        // Find bash.exe from Git for Windows
-        let bash_paths = [
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-            r"C:\Git\bin\bash.exe",
-        ];
-        let bash = bash_paths.iter().find(|p| std::path::Path::new(p).exists());
-
-        if let Some(bash_exe) = bash {
-            // Open a new cmd window that runs bash with our script
-            let script_unix = script_path.to_string_lossy().replace('\\', "/");
-            Command::new("cmd")
-                .args(["/c", "start", "", bash_exe, "--login", &script_unix])
-                .spawn()
-                .map_err(|e| format!("Failed to open Git Bash: {}", e))?;
-        } else {
-            return Err("Git Bash not found. Please install Git for Windows: https://git-scm.com/download/win".to_string());
-        }
-    } else {
-        let script_path = vhome.join("_launch.sh");
-        let script = format!(
-            "#!/bin/bash\nexport HOME='{}'\nexport ANTHROPIC_API_KEY='{}'\nexport ANTHROPIC_BASE_URL='{}'\ncd '{}'\n{}\n",
-            vhome_str.replace("'", "'\\''"),
-            cfg.api_key.replace("'", "'\\''"),
-            cfg.base_url.replace("'", "'\\''"),
-            working_dir.replace("'", "'\\''"),
-            claude_cmd,
-        );
-        fs::write(&script_path, &script).map_err(|e| e.to_string())?;
-        Command::new("chmod")
-            .args(["+x", &script_path.to_string_lossy()])
-            .output()
-            .ok();
-
-        let terminals = ["x-terminal-emulator", "gnome-terminal", "konsole", "xterm"];
-        let mut launched = false;
-        for term in &terminals {
-            if Command::new(term)
-                .args(["-e", &script_path.to_string_lossy()])
-                .spawn()
-                .is_ok()
-            {
-                launched = true;
-                break;
-            }
-        }
-        if !launched {
-            return Err("No terminal emulator found".to_string());
-        }
-    }
-
-    Ok(())
 }
 
 #[tauri::command]
@@ -179,6 +51,9 @@ pub async fn update_claude_code() -> Result<String, String> {
         res.join("node").join("bin").join("node")
     };
 
+    // npm shim ships as `bin/npm` on macOS but the require path inside it is
+    // broken when bundled (it's a regular file, not the symlink the official
+    // distro uses). Run npm-cli.js directly on every platform.
     let npm = if cfg!(target_os = "windows") {
         res.join("node")
             .join("node_modules")
@@ -186,7 +61,12 @@ pub async fn update_claude_code() -> Result<String, String> {
             .join("bin")
             .join("npm-cli.js")
     } else {
-        res.join("node").join("bin").join("npm")
+        res.join("node")
+            .join("lib")
+            .join("node_modules")
+            .join("npm")
+            .join("bin")
+            .join("npm-cli.js")
     };
 
     let claude_dir = res.join("claude-code");
@@ -199,15 +79,18 @@ pub async fn update_claude_code() -> Result<String, String> {
     let npm_clone = npm.clone();
     let claude_dir_clone = claude_dir.clone();
 
-    // Run npm update in a blocking thread
-    let (stdout, _stderr, success) = tokio::task::spawn_blocking(move || {
+    // Force-install the latest version. `npm update` can refuse to bump past
+    // semver ranges; `install ...@latest` always pulls the newest published.
+    let (stdout, stderr, success) = tokio::task::spawn_blocking(move || {
         let output = Command::new(&node_clone)
             .args([
                 npm_clone.to_string_lossy().as_ref(),
-                "update",
-                "@anthropic-ai/claude-code",
+                "install",
+                "@anthropic-ai/claude-code@latest",
                 "--prefix",
                 claude_dir_clone.to_string_lossy().as_ref(),
+                "--no-audit",
+                "--no-fund",
             ])
             .output();
         match output {
@@ -223,44 +106,74 @@ pub async fn update_claude_code() -> Result<String, String> {
     .map_err(|e| e.to_string())?;
 
     if !success {
-        return Err(
-            "Update failed. Please check your network connection and try again.".to_string(),
-        );
+        // Include the whole npm error output so we can actually see what broke.
+        let detail = if !stderr.trim().is_empty() {
+            stderr.trim().to_string()
+        } else if !stdout.trim().is_empty() {
+            stdout.trim().to_string()
+        } else {
+            "no output".to_string()
+        };
+        // Cap to ~800 chars so the dialog stays readable but actionable.
+        let detail = if detail.chars().count() > 800 {
+            format!("{}...", detail.chars().take(800).collect::<String>())
+        } else {
+            detail
+        };
+        return Err(format!("Update failed.\n{}", detail));
     }
 
-    // Get installed version
-    let node_clone2 = node.clone();
-    let claude_dir_clone2 = claude_dir.clone();
-    let ver_output = tokio::task::spawn_blocking(move || {
-        Command::new(&node_clone2)
-            .args([
-                "-e",
-                "console.log(require('@anthropic-ai/claude-code/package.json').version)",
-            ])
-            .current_dir(&claude_dir_clone2)
-            .env(
-                "NODE_PATH",
-                claude_dir_clone2
-                    .join("node_modules")
-                    .to_string_lossy()
-                    .as_ref(),
-            )
-            .output()
-            .ok()
+    // Verify the new native binary actually runs. If postinstall skipped,
+    // hit a network error, or the binary is corrupt, --version will fail
+    // and we surface it instead of silently leaving a broken bundle.
+    let claude_bin = res.join(claude_binary_rel());
+    if !claude_bin.exists() {
+        return Err(format!(
+            "Update completed, but the Claude Code binary is missing at {:?}. \
+             Postinstall (install.cjs) likely failed to copy the platform binary. \
+             Check your network and try again.",
+            claude_bin
+        ));
+    }
+
+    let claude_bin_clone = claude_bin.clone();
+    let verify = tokio::task::spawn_blocking(move || {
+        let mut c = Command::new(&claude_bin_clone);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        c.arg("--version").output()
     })
     .await
-    .ok()
-    .flatten();
+    .map_err(|e| format!("Update completed, but verification thread failed: {}", e))?;
 
-    let version = ver_output
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .unwrap_or_default()
-        .trim()
-        .to_string();
+    let verify = match verify {
+        Ok(o) => o,
+        Err(e) => {
+            return Err(format!(
+                "Update completed, but the new binary failed to execute: {}. \
+                 The bundle may be incomplete — try updating again.",
+                e
+            ));
+        }
+    };
 
+    if !verify.status.success() {
+        let err = String::from_utf8_lossy(&verify.stderr).trim().to_string();
+        return Err(format!(
+            "Update completed, but `claude --version` exited with {}. {}",
+            verify.status.code().unwrap_or(-1),
+            err
+        ));
+    }
+
+    let version = String::from_utf8_lossy(&verify.stdout).trim().to_string();
     if version.is_empty() {
         Ok(format!("Updated. {}", stdout.trim()))
     } else {
-        Ok(format!("Claude Code v{}", version))
+        // `claude --version` prints something like "2.1.119 (Claude Code)"
+        Ok(format!("Updated to {}", version))
     }
 }

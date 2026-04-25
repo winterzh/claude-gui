@@ -54,7 +54,19 @@ echo "--- Verifying universal uv binary ---"
 file "$RESOURCE_DIR/uv/bin/uv"
 
 echo "--- Installing @anthropic-ai/claude-code ---"
+# Since 2.1.x, the package ships a native binary; postinstall (install.cjs)
+# copies the platform binary into bin/claude.exe. Don't silence stderr — if
+# postinstall fails, we want to see why.
 cd "$RESOURCE_DIR/claude-code"
-"$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" init -y > /dev/null 2>&1
-"$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" install @anthropic-ai/claude-code --save > /dev/null 2>&1
+"$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" init -y > /dev/null
+"$RESOURCE_DIR/node/bin/node" "$RESOURCE_DIR/node/lib/node_modules/npm/bin/npm-cli.js" install @anthropic-ai/claude-code@latest --save --no-audit --no-fund
+
+CLAUDE_BIN="$RESOURCE_DIR/claude-code/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+if [ ! -f "$CLAUDE_BIN" ]; then
+  echo "ERROR: Claude Code native binary missing at $CLAUDE_BIN" >&2
+  echo "Postinstall (install.cjs) likely failed. Check npm output above." >&2
+  exit 1
+fi
+file "$CLAUDE_BIN"
+
 echo "=== Resources ready ==="

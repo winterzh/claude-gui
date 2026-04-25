@@ -17,7 +17,7 @@ pub fn run() {
             config::save_profiles,
             config::save_skip_permissions,
             config::test_connection,
-            launcher::launch_claude_code,
+            config::fetch_models,
             launcher::update_claude_code,
             pty::spawn_claude,
             pty::pty_write,

@@ -1,4 +1,4 @@
-name: Build Windows Installer
+name: Build Installers
 
 on:
   push:
@@ -12,8 +12,18 @@ permissions:
   contents: write
 
 jobs:
-  build-windows:
-    runs-on: windows-latest
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-latest
+            prep: pwsh scripts/prepare-resources-win.ps1
+            label: Windows
+          - platform: macos-latest
+            prep: bash scripts/prepare-resources.sh
+            label: macOS
+    runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
 
@@ -31,12 +41,14 @@ jobs:
           workspaces: src-tauri
 
       - name: Write packaging config
-        if: ${{ env.PACKAGING_CONFIG != '' }}
         env:
           PACKAGING_CONFIG: ${{ secrets.PACKAGING_CONFIG }}
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Force -Path config-packaging | Out-Null
-          $env:PACKAGING_CONFIG | Out-File -Encoding utf8 config-packaging/config.json
+          if [ -n "$PACKAGING_CONFIG" ]; then
+            mkdir -p config-packaging
+            printf '%s' "$PACKAGING_CONFIG" > config-packaging/config.json
+          fi
 
       - name: Apply packaging config
         if: ${{ hashFiles('config-packaging/config.json') != '' }}
@@ -45,20 +57,26 @@ jobs:
       - name: Install frontend dependencies
         run: npm install
 
-      - name: Prepare resources (bundle Node.js + Claude Code)
-        run: pwsh scripts/prepare-resources-win.ps1
+      - name: Prepare resources (bundle Node.js + Claude Code native binary)
+        run: ${{ matrix.prep }}
 
       - name: Verify resources
+        shell: bash
         run: |
-          dir src-tauri\resources\node\
-          dir src-tauri\resources\claude-code\node_modules\@anthropic-ai\claude-code\cli.js
+          # Claude Code 2.1.x ships a native binary at this path on every OS
+          # (the .exe extension is preserved cross-platform by the npm package).
+          ls -la "src-tauri/resources/claude-code/node_modules/@anthropic-ai/claude-code/bin/claude.exe"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            ls -la src-tauri/resources/node/node.exe
+          else
+            ls -la src-tauri/resources/node/bin/node
+          fi
 
       - name: Generate tag for scheduled builds
         if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
         id: auto_tag
-        run: |
-          $date = Get-Date -Format "yyyyMMdd"
-          echo "tag=auto-$date" >> $env:GITHUB_OUTPUT
+        shell: bash
+        run: echo "tag=auto-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
 
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
@@ -71,11 +89,15 @@ jobs:
           releaseBody: |
             ## Claude Code Launcher
 
-            Download the .exe installer below. Node.js and Claude Code are bundled — no extra installation needed.
+            一键启动器,内置 Node.js + Claude Code 原生二进制,免装。
 
-            1. Install the .exe
-            2. Open the app, enter your API Key and Base URL
-            3. Choose a working directory
-            4. Click "Launch Claude Code"
+            - **Windows**: 下载 `.exe` 安装包(x64)
+            - **macOS**: 下载 `.dmg`(Apple Silicon)
+
+            使用步骤:
+            1. 安装并打开应用
+            2. 填入 API Key 和 Base URL(或一键 DeepSeek v4 预设)
+            3. 选择工作目录
+            4. 点击 "启动 Claude Code"
           releaseDraft: false
           prerelease: false

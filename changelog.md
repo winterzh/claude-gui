@@ -1,5 +1,20 @@
 # 更新日志
 
+## v0.9.8
+
+- **适配 Claude Code 2.1.x native binary**: Anthropic 已将 npm 包从 JS 改为单文件原生二进制,启动器同步切换为直接 spawn `bin/claude.exe`,不再依赖 node 运行时
+- **修复内置升级**: macOS 上 `bin/npm` 软链不正确导致 npm 启动失败,改为直接执行 `npm-cli.js`;升级后会校验 `claude --version` 实际可执行,失败回报具体错误
+- **修复 "Auth conflict" 警告**: 不再同时设置 `ANTHROPIC_API_KEY` 与 `ANTHROPIC_AUTH_TOKEN`;Profile 携带 `auth_env` 字段,DeepSeek 等 Bearer 风格代理走 `ANTHROPIC_AUTH_TOKEN`,Anthropic 兼容代理走默认 `ANTHROPIC_API_KEY`
+- **Model 跟随 Profile**: 模型字段不再全局共享,每个 Profile 独立保存;切换 Profile 自动加载对应 Model
+- **一键配置 DeepSeek v4**: 新增按钮,自动创建 `deepseek v4` Profile,预填 base_url、模型、超时、effort level、subagent 模型等 7 项 env;用户只需填 API Key
+- **Profile 类型分级**: 激活码 Profile 完全隐藏配置项;DeepSeek 等 curated Profile 仅显示 API Key 输入框;自定义 Profile 全部可编辑
+- **模型获取按钮**: 设置页可一键拉取 `${baseUrl}/v1/models` 列表,可视化选择
+- **xterm 中文/Box-drawing 渲染修复**: 加载 Unicode 11 width 表 + 启用 `customGlyphs`,避免 CJK 字符与 ASCII 错位重叠
+- **Shift+Enter 换行 / Ctrl+V 粘贴**: 在 xterm 上自定义键盘处理器,Shift+Enter 注入 Alt+Enter 等价转义;Windows/Linux Ctrl+V、macOS Cmd+V 通过 clipboard API 写入 PTY
+- **新建 Profile 修复**: 替换 `window.prompt`(Tauri 2 webview 不支持)为内联输入框,Enter 确认 Esc 取消
+- **macOS 图标重做**: 原图无透明背景导致 Dock 显示一圈白方块,改为透明背景 + 80% 内边距(符合 Apple HIG)
+- **死代码清理**: 删除 `launch_claude_code` / `build_launch_script` / `sync_user_settings` / `merge_json` 等未使用函数
+
 ## v0.9.6
 
 - 当 Base URL 包含 "minimax" 时，自动配置 MiniMax MCP（网页搜索 + 图片理解）

@@ -4,6 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
+import { Unicode11Addon } from "@xterm/addon-unicode11";
 import "@xterm/xterm/css/xterm.css";
 import { useApp } from "../App";
 import { t } from "../i18n";
@@ -77,7 +78,17 @@ export default function Chat({ onSettings }: Props) {
     const xterm = new Terminal({
       cursorBlink: true,
       fontSize: 14,
-      fontFamily: "'Cascadia Code', 'Fira Code', Consolas, monospace",
+      letterSpacing: 0,
+      lineHeight: 1.0,
+      // Render box-drawing & block-element glyphs ourselves instead of using
+      // the font. CJK fallback fonts often draw ─/│/┐ at non-integer widths,
+      // which throws Ink's redraws out of sync with xterm's grid (the ghost
+      // headers / overlapping lines you see).
+      customGlyphs: true,
+      // Stack a CJK-friendly fallback after the programming fonts so Chinese
+      // glyphs render at exactly 2x ASCII width (avoids overlapping rows).
+      fontFamily:
+        "'Cascadia Code', 'Fira Code', Menlo, Consolas, 'PingFang SC', 'Microsoft YaHei', 'Source Han Sans SC', monospace",
       theme: isDark ? {
         background: "#0f0f23",
         foreground: "#e0e0e0",
@@ -96,7 +107,37 @@ export default function Chat({ onSettings }: Props) {
     const fit = new FitAddon();
     fitRef.current = fit;
     xterm.loadAddon(fit);
+    // Unicode 11 width tables — without this, CJK chars are sized as 1 cell
+    // but rendered as 2, causing the overlapping/misaligned output you saw.
+    const unicode11 = new Unicode11Addon();
+    xterm.loadAddon(unicode11);
+    xterm.unicode.activeVersion = "11";
     xterm.open(termRef.current);
+
+    // Custom key handler:
+    //   Shift+Enter → send ESC+CR (Alt+Enter equivalent) so Claude Code's
+    //   input box inserts a newline instead of submitting.
+    //   Ctrl+V (Win/Linux) / Cmd+V (mac) → read clipboard and write to PTY.
+    //   Returning false swallows the default xterm handling.
+    xterm.attachCustomKeyEventHandler((e) => {
+      if (e.type !== "keydown") return true;
+      if (e.key === "Enter" && e.shiftKey) {
+        invoke("pty_write", { data: "\x1b\r" });
+        return false;
+      }
+      const isPaste =
+        e.key.toLowerCase() === "v" &&
+        ((navigator.platform.toLowerCase().includes("mac") && e.metaKey) ||
+          (!navigator.platform.toLowerCase().includes("mac") && e.ctrlKey)) &&
+        !e.altKey;
+      if (isPaste) {
+        navigator.clipboard.readText().then((text) => {
+          if (text) invoke("pty_write", { data: text });
+        }).catch(() => {});
+        return false;
+      }
+      return true;
+    });
 
     // Debounced fit — prevents rapid resize causing misaligned rows
     let fitTimer: ReturnType<typeof setTimeout> | null = null;
@@ -129,9 +170,9 @@ export default function Chat({ onSettings }: Props) {
     invoke("spawn_claude").catch((e) => {
       const msg = String(e);
       let friendly = msg;
-      if (msg.includes("not found")) friendly = "Claude Code resources not found. Please reinstall the app.";
+      if (msg.includes("No config")) friendly = "Please configure your API key and Base URL in Settings first.";
       else if (msg.includes("Working directory")) friendly = "Working directory does not exist. Please choose a valid directory.";
-      else if (msg.includes("No config")) friendly = "Please configure your API key and Base URL in Settings first.";
+      else if (msg.includes("Resources directory not found") || msg.includes("Resources incomplete") || msg.includes("find_resources returned None")) friendly = `Claude Code resources problem:\n${msg}`;
       xterm.write(`\x1b[31m${friendly}\x1b[0m\r\n`);
     });
 
@@ -203,7 +244,7 @@ export default function Chat({ onSettings }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", background: T.bg, gap: 24 }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: T.text }}>{t(lang, "appName")}</h1>
-      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v{__PACKAGING_CONFIG__?.version || "0.9.7"}</span>
+      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v{__PACKAGING_CONFIG__?.version || "0.9.8"}</span>
 
       {/* Connection status */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

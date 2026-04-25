@@ -7,6 +7,9 @@ interface Profile {
   name: string;
   api_key: string;
   base_url: string;
+  model?: string;
+  auth_env?: string;
+  extra_env?: Record<string, string>;
 }
 
 interface Props {
@@ -34,9 +37,15 @@ export default function Setup({ onSaved }: Props) {
   const [secretResult, setSecretResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [skipPerms, setSkipPerms] = useState(false);
   const [showSkipConfirm, setShowSkipConfirm] = useState(false);
+  const [model, setModel] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelMsg, setModelMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [addingProfile, setAddingProfile] = useState(false);
+  const [newProfileName, setNewProfileName] = useState("");
 
   useEffect(() => {
-    invoke<{ api_key: string; base_url: string; profiles: Profile[]; active_profile: string; skip_permissions?: boolean } | null>("load_config").then((cfg) => {
+    invoke<{ api_key: string; base_url: string; profiles: Profile[]; active_profile: string; skip_permissions?: boolean; model?: string } | null>("load_config").then((cfg) => {
       if (cfg) {
         // Use saved profiles, or defaults if first time (no profiles key saved yet)
         setProfiles(cfg.profiles || []);
@@ -49,9 +58,30 @@ export default function Setup({ onSaved }: Props) {
           setBaseUrl(cfg.base_url || "");
         }
         if (cfg.skip_permissions) setSkipPerms(true);
+        if (cfg.model) setModel(cfg.model);
       }
     });
   }, []);
+
+  const handleFetchModels = async () => {
+    const finalKey = getActiveKey().trim();
+    const finalUrl = getActiveUrl().trim();
+    if (!finalKey || !finalUrl) {
+      setModelMsg({ ok: false, msg: lang === "zh" ? "请先填写 Key 和 URL" : "Fill in Key and URL first" });
+      return;
+    }
+    setFetchingModels(true);
+    setModelMsg(null);
+    try {
+      const list = await invoke<string[]>("fetch_models", { apiKey: finalKey, baseUrl: finalUrl });
+      setModelOptions(list);
+      setModelMsg({ ok: true, msg: lang === "zh" ? `已获取 ${list.length} 个模型` : `Loaded ${list.length} models` });
+    } catch (e) {
+      setModelOptions([]);
+      setModelMsg({ ok: false, msg: String(e) });
+    }
+    setFetchingModels(false);
+  };
 
   const selectProfile = (name: string) => {
     // Save current edits to old profile before switching
@@ -60,7 +90,11 @@ export default function Setup({ onSaved }: Props) {
     }
     setActiveProfile(name);
     const p = profiles.find((x) => x.name === name);
-    if (p) { setApiKey(p.api_key); setBaseUrl(p.base_url); }
+    if (p) {
+      setApiKey(p.api_key);
+      setBaseUrl(p.base_url);
+      setModel(p.model || "");
+    }
     setEditingKey(false);
     setEditingUrl(false);
     setShowKey(false);
@@ -71,13 +105,22 @@ export default function Setup({ onSaved }: Props) {
   const saveCurrentToProfile = (name: string) => {
     const finalKey = editingKey ? apiKey : profiles.find((p) => p.name === name)?.api_key || apiKey;
     const finalUrl = editingUrl ? baseUrl : profiles.find((p) => p.name === name)?.base_url || baseUrl;
-    setProfiles((prev) => prev.map((p) => p.name === name ? { ...p, api_key: finalKey, base_url: finalUrl } : p));
+    setProfiles((prev) => prev.map((p) => p.name === name ? { ...p, api_key: finalKey, base_url: finalUrl, model: model.trim() } : p));
   };
 
-  const addProfile = () => {
-    const name = prompt(lang === "zh" ? "输入配置名称:" : "Enter profile name:");
-    if (!name) return;
-    if (profiles.find((p) => p.name === name)) { setError(lang === "zh" ? "名称已存在" : "Name already exists"); return; }
+  const beginAddProfile = () => {
+    setAddingProfile(true);
+    setNewProfileName("");
+    setError("");
+  };
+
+  const confirmAddProfile = () => {
+    const name = newProfileName.trim();
+    if (!name) { setAddingProfile(false); return; }
+    if (profiles.find((p) => p.name === name)) {
+      setError(lang === "zh" ? "名称已存在" : "Name already exists");
+      return;
+    }
     const newP: Profile = { name, api_key: "", base_url: "" };
     const updated = [...profiles, newP];
     setProfiles(updated);
@@ -87,6 +130,8 @@ export default function Setup({ onSaved }: Props) {
     setEditingKey(true);
     setEditingUrl(true);
     setTestResult(null);
+    setAddingProfile(false);
+    setNewProfileName("");
     invoke("save_profiles", { profiles: updated, activeProfile: name });
   };
 
@@ -116,7 +161,12 @@ export default function Setup({ onSaved }: Props) {
     setError("");
     try {
       await invoke("save_config", { apiKey: finalKey, baseUrl: finalUrl });
-      const updated = profiles.map((p) => p.name === activeProfile ? { ...p, api_key: finalKey, base_url: finalUrl } : p);
+      // Legacy global model — kept for backward compat. Per-profile model
+      // (saved into profiles array below) takes precedence at spawn time.
+      await invoke("save_model_pref", { model: model.trim() });
+      const updated = profiles.map((p) => p.name === activeProfile
+        ? { ...p, api_key: finalKey, base_url: finalUrl, model: model.trim() }
+        : p);
       await invoke("save_profiles", { profiles: updated, activeProfile });
       setProfiles(updated);
       setApiKey(finalKey);
@@ -144,6 +194,75 @@ export default function Setup({ onSaved }: Props) {
       setTestResult({ ok: false, msg: String(e) });
     }
     setTesting(false);
+  };
+
+  const [presetMsg, setPresetMsg] = useState<{ ok: boolean; msg: string } | null>(null);
+
+  const applyDeepseekPreset = async () => {
+    const NAME = "deepseek v4";
+    const URL = "https://api.deepseek.com/anthropic";
+    const MODEL = "deepseek-v4-pro";
+    // Full env bundle for DeepSeek's Anthropic-compatible endpoint.
+    // ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN are filled from api_key at
+    // spawn time, so they aren't included here.
+    const ENV: Record<string, string> = {
+      API_TIMEOUT_MS: "3000000",
+      ANTHROPIC_SMALL_FAST_MODEL: "deepseek-v4-flash",
+      ANTHROPIC_DEFAULT_SONNET_MODEL: "deepseek-v4-pro",
+      ANTHROPIC_DEFAULT_OPUS_MODEL: "deepseek-v4-pro",
+      ANTHROPIC_DEFAULT_HAIKU_MODEL: "deepseek-v4-flash",
+      CLAUDE_CODE_SUBAGENT_MODEL: "deepseek-v4-pro",
+      CLAUDE_CODE_EFFORT_LEVEL: "max",
+    };
+
+    const existing = profiles.find((p) => p.name === NAME);
+    let updated: Profile[];
+    let createdNew: boolean;
+
+    if (existing) {
+      // Already exists — keep its api_key, refresh everything else
+      updated = profiles.map((p) => p.name === NAME
+        ? { ...p, base_url: URL, model: MODEL, auth_env: "ANTHROPIC_AUTH_TOKEN", extra_env: ENV }
+        : p);
+      createdNew = false;
+    } else {
+      updated = [...profiles, {
+        name: NAME, api_key: "", base_url: URL, model: MODEL,
+        auth_env: "ANTHROPIC_AUTH_TOKEN", extra_env: ENV,
+      }];
+      createdNew = true;
+    }
+
+    const activeKey = updated.find((p) => p.name === NAME)?.api_key || "";
+
+    setProfiles(updated);
+    setActiveProfile(NAME);
+    setApiKey(activeKey);
+    setBaseUrl(URL);
+    setModel(MODEL);
+    setEditingKey(!activeKey); // focus key input if empty
+    setEditingUrl(false);
+    setShowKey(false);
+    setTestResult(null);
+    setError("");
+    setModelMsg(null);
+
+    try {
+      await invoke("save_profiles", { profiles: updated, activeProfile: NAME });
+      await invoke("save_model_pref", { model: MODEL });
+      if (activeKey) {
+        await invoke("save_config", { apiKey: activeKey, baseUrl: URL });
+      }
+      setPresetMsg({
+        ok: true,
+        msg: createdNew
+          ? (lang === "zh" ? "已创建 deepseek v4 配置,请填入 API Key" : "Created deepseek v4 profile — enter your API Key")
+          : (lang === "zh" ? "已切换到现有 deepseek v4 配置" : "Switched to existing deepseek v4 profile"),
+      });
+    } catch (e) {
+      setPresetMsg({ ok: false, msg: String(e) });
+    }
+    setTimeout(() => setPresetMsg(null), 4000);
   };
 
   const applySecretProfile = async (p: Profile, msg: string) => {
@@ -189,6 +308,11 @@ export default function Setup({ onSaved }: Props) {
   const currentKey = profiles.find((p) => p.name === activeProfile)?.api_key || apiKey;
   const currentUrl = profiles.find((p) => p.name === activeProfile)?.base_url || baseUrl;
   const isPreset = isPresetProfile(activeProfile);
+  // "Curated" preset profiles ship a fixed url+model+env bundle. Only the
+  // API Key needs filling — hide everything else to avoid the user breaking
+  // the preset.
+  const CURATED_PROFILE_NAMES = new Set(["deepseek v4"]);
+  const isCurated = !isPreset && CURATED_PROFILE_NAMES.has(activeProfile);
 
   return (
     <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", padding: 20, background: T.bg, overflowY: "auto" }}>
@@ -212,10 +336,38 @@ export default function Setup({ onSaved }: Props) {
                 </button>
               </div>
             ))}
-            <button onClick={addProfile}
-              style={{ padding: "5px 12px", borderRadius: 6, border: `1px dashed ${T.border}`, background: "transparent", color: T.textMuted, cursor: "pointer", fontSize: 12 }}>
-              + {lang === "zh" ? "新建" : "New"}
-            </button>
+            {addingProfile ? (
+              <div style={{ display: "flex", alignItems: "center" }}>
+                <input
+                  autoFocus
+                  value={newProfileName}
+                  onChange={(e) => setNewProfileName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") confirmAddProfile();
+                    else if (e.key === "Escape") { setAddingProfile(false); setNewProfileName(""); }
+                  }}
+                  placeholder={lang === "zh" ? "配置名称" : "Profile name"}
+                  style={{ padding: "4px 10px", borderRadius: "6px 0 0 6px", border: `1px solid ${T.border}`, background: T.bg, color: T.text, fontSize: 12, width: 110, outline: "none" }}
+                />
+                <button
+                  onClick={confirmAddProfile}
+                  style={{ padding: "5px 8px", borderRadius: 0, border: `1px solid ${T.border}`, borderLeft: "none", background: T.bg, color: T.success, cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                >
+                  ✓
+                </button>
+                <button
+                  onClick={() => { setAddingProfile(false); setNewProfileName(""); }}
+                  style={{ padding: "5px 8px", borderRadius: "0 6px 6px 0", border: `1px solid ${T.border}`, borderLeft: "none", background: T.bg, color: T.error, cursor: "pointer", fontSize: 12, fontWeight: 700 }}
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button onClick={beginAddProfile}
+                style={{ padding: "5px 12px", borderRadius: 6, border: `1px dashed ${T.border}`, background: "transparent", color: T.textMuted, cursor: "pointer", fontSize: 12 }}>
+                + {lang === "zh" ? "新建" : "New"}
+              </button>
+            )}
           </div>
         </div>
 
@@ -228,7 +380,7 @@ export default function Setup({ onSaved }: Props) {
           </div>
         ) : (
           <>
-            {/* API Key */}
+            {/* API Key — always shown for non-activation profiles */}
             <div style={{ marginBottom: 16 }}>
               <label style={labelStyle(T)}>{t(lang, "apiKey")}</label>
               {editingKey ? (
@@ -249,23 +401,102 @@ export default function Setup({ onSaved }: Props) {
                   )}
                 </div>
               )}
-            </div>
-
-            {/* Base URL - shown in plain text */}
-            <div style={{ marginBottom: 16 }}>
-              <label style={labelStyle(T)}>{t(lang, "baseUrl")}</label>
-              {editingUrl ? (
-                <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoFocus
-                  placeholder={lang === "zh" ? "输入 Base URL" : "Enter Base URL"}
-                  style={inputStyle(T)} />
-              ) : (
-                <div onClick={() => { setEditingUrl(true); setBaseUrl(currentUrl); }}
-                  style={{ ...inputStyle(T), cursor: "pointer", color: currentUrl ? T.text : T.textMuted }}>
-                  {currentUrl || (lang === "zh" ? "点击输入 URL" : "Click to enter URL")}
-                </div>
+              {isCurated && (
+                <p style={{ fontSize: 11, color: T.textMuted, marginTop: 6 }}>
+                  {lang === "zh"
+                    ? `${activeProfile} 已预配置 base_url、模型、env,只需填入 API Key`
+                    : `${activeProfile} preset: base_url, model & env are locked — just paste your API Key`}
+                </p>
               )}
             </div>
+
+            {/* Base URL — hidden for curated presets (locked) */}
+            {!isCurated && (
+              <div style={{ marginBottom: 16 }}>
+                <label style={labelStyle(T)}>{t(lang, "baseUrl")}</label>
+                {editingUrl ? (
+                  <input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} autoFocus
+                    placeholder={lang === "zh" ? "输入 Base URL" : "Enter Base URL"}
+                    style={inputStyle(T)} />
+                ) : (
+                  <div onClick={() => { setEditingUrl(true); setBaseUrl(currentUrl); }}
+                    style={{ ...inputStyle(T), cursor: "pointer", color: currentUrl ? T.text : T.textMuted }}>
+                    {currentUrl || (lang === "zh" ? "点击输入 URL" : "Click to enter URL")}
+                  </div>
+                )}
+              </div>
+            )}
           </>
+        )}
+
+        {/* Model — hidden for activation-code presets (everything pre-set)
+            and curated presets (model locked by the preset). */}
+        {!isPreset && !isCurated && (
+        <div style={{ marginBottom: 16 }}>
+          <label style={labelStyle(T)}>
+            {lang === "zh" ? "模型 (可选)" : "Model (optional)"}
+          </label>
+          <div style={{ display: "flex", gap: 0 }}>
+            <input
+              value={model}
+              onChange={(e) => setModel(e.target.value)}
+              placeholder={lang === "zh" ? "留空使用默认模型" : "Leave empty for default"}
+              list="model-suggestions"
+              style={{ ...inputStyle(T), flex: 1, borderRadius: "8px 0 0 8px" }}
+            />
+            <button
+              onClick={handleFetchModels}
+              disabled={fetchingModels}
+              style={{
+                padding: "10px 12px",
+                borderRadius: "0 8px 8px 0",
+                border: `1px solid ${T.border}`,
+                borderLeft: "none",
+                background: T.bg,
+                color: T.textSecondary,
+                cursor: fetchingModels ? "default" : "pointer",
+                fontSize: 12,
+                whiteSpace: "nowrap",
+                opacity: fetchingModels ? 0.6 : 1,
+              }}
+            >
+              {fetchingModels
+                ? (lang === "zh" ? "获取中..." : "Loading...")
+                : (lang === "zh" ? "获取列表" : "Fetch list")}
+            </button>
+          </div>
+          {modelOptions.length > 0 && (
+            <>
+              <datalist id="model-suggestions">
+                {modelOptions.map((m) => <option key={m} value={m} />)}
+              </datalist>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 6 }}>
+                {modelOptions.map((m) => (
+                  <button
+                    key={m}
+                    onClick={() => setModel(m)}
+                    style={{
+                      padding: "3px 8px",
+                      borderRadius: 4,
+                      border: `1px solid ${model === m ? T.accent : T.border}`,
+                      background: model === m ? T.accent : T.bg,
+                      color: model === m ? "#fff" : T.textSecondary,
+                      cursor: "pointer",
+                      fontSize: 11,
+                    }}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+          {modelMsg && (
+            <p style={{ fontSize: 12, marginTop: 4, color: modelMsg.ok ? T.success : T.error, wordBreak: "break-word" }}>
+              {modelMsg.msg}
+            </p>
+          )}
+        </div>
         )}
 
         {/* Language + Theme */}
@@ -340,6 +571,30 @@ export default function Setup({ onSaved }: Props) {
             style={{ flex: 1, padding: "12px 0", borderRadius: 8, border: "none", background: T.accent, color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer", opacity: saving ? 0.6 : 1 }}>
             {saving ? t(lang, "saving") : t(lang, "saveAndLaunch")}
           </button>
+        </div>
+
+        {/* Quick presets */}
+        <div style={{ marginTop: 16, padding: "10px 12px", borderRadius: 8, background: T.bg, border: `1px dashed ${T.border}` }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <button
+              onClick={applyDeepseekPreset}
+              style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: T.accent, color: "#fff", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+            >
+              {lang === "zh" ? "帮我配置 DeepSeek v4" : "Configure DeepSeek v4"}
+            </button>
+            <span style={{ fontSize: 11, color: T.textMuted, lineHeight: 1.4 }}>
+              {lang === "zh" ? (
+                <>自动填入 <code>api.deepseek.com/anthropic</code> 与 <code>deepseek-v4-pro</code>。API Key 请前往 <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer" style={{ color: T.accent }}>platform.deepseek.com</a> 购买后填入</>
+              ) : (
+                <>Auto-fills <code>api.deepseek.com/anthropic</code> + <code>deepseek-v4-pro</code>. Get your API Key from <a href="https://platform.deepseek.com" target="_blank" rel="noreferrer" style={{ color: T.accent }}>platform.deepseek.com</a> and paste it above.</>
+              )}
+            </span>
+          </div>
+          {presetMsg && (
+            <p style={{ fontSize: 12, marginTop: 8, marginBottom: 0, color: presetMsg.ok ? T.success : T.error, wordBreak: "break-word" }}>
+              {presetMsg.msg}
+            </p>
+          )}
         </div>
 
         {/* Secret code */}

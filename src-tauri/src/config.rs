@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
@@ -7,6 +8,20 @@ pub struct Profile {
     pub name: String,
     pub api_key: String,
     pub base_url: String,
+    /// Per-profile model selection — overrides the legacy top-level `model`.
+    #[serde(default)]
+    pub model: String,
+    /// Which env var the api_key should land in. Empty defaults to
+    /// `ANTHROPIC_API_KEY` (x-api-key style — Anthropic, most relays).
+    /// Set to `ANTHROPIC_AUTH_TOKEN` for Bearer-style proxies (DeepSeek, etc.).
+    /// Setting only one prevents Claude Code's "Auth conflict" warning.
+    #[serde(default)]
+    pub auth_env: String,
+    /// Extra environment variables injected into Claude Code at spawn time.
+    /// Lets a preset (e.g. DeepSeek v4) ship a bundle of env defaults so the
+    /// user only has to enter the API key.
+    #[serde(default)]
+    pub extra_env: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -102,6 +117,90 @@ pub fn load_config() -> Result<Option<AppConfig>, String> {
     let data = fs::read_to_string(path).map_err(|e| e.to_string())?;
     let config: AppConfig = serde_json::from_str(&data).map_err(|e| e.to_string())?;
     Ok(Some(config))
+}
+
+#[tauri::command]
+pub async fn fetch_models(api_key: String, base_url: String) -> Result<Vec<String>, String> {
+    let base = base_url.trim_end_matches('/');
+    let url = if base.ends_with("/v1") {
+        format!("{}/models", base)
+    } else {
+        format!("{}/v1/models", base)
+    };
+
+    let output = tokio::task::spawn_blocking(move || {
+        let mut cmd = std::process::Command::new("curl");
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000);
+        }
+        cmd.args([
+            "-s",
+            "-m",
+            "15",
+            &url,
+            "-H",
+            &format!("x-api-key: {}", api_key),
+            "-H",
+            &format!("Authorization: Bearer {}", api_key),
+            "-H",
+            "anthropic-version: 2023-06-01",
+        ]);
+        cmd.output()
+    })
+    .await
+    .map_err(|_| "Internal error".to_string())?
+    .map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            "curl not found. Please install curl or check your PATH.".to_string()
+        } else {
+            format!("Failed to fetch models: {}", e)
+        }
+    })?;
+
+    let body = String::from_utf8_lossy(&output.stdout).to_string();
+    if body.trim().is_empty() {
+        return Err("Empty response from server.".to_string());
+    }
+
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|_| "Server did not return JSON. The endpoint may not support /v1/models.".to_string())?;
+
+    // Try common schemas: { data: [{id}] } (OpenAI/Anthropic style) or { models: [{id|name}] }
+    let pick_id = |v: &serde_json::Value| -> Option<String> {
+        v.get("id")
+            .and_then(|x| x.as_str())
+            .or_else(|| v.get("name").and_then(|x| x.as_str()))
+            .or_else(|| v.get("model").and_then(|x| x.as_str()))
+            .map(|s| s.to_string())
+    };
+
+    let arr = json
+        .get("data")
+        .and_then(|d| d.as_array())
+        .or_else(|| json.get("models").and_then(|d| d.as_array()))
+        .or_else(|| json.as_array());
+
+    let mut ids: Vec<String> = match arr {
+        Some(a) => a.iter().filter_map(pick_id).collect(),
+        None => {
+            // Surface API-level error message when present
+            let err = json
+                .get("error")
+                .and_then(|e| e.get("message"))
+                .and_then(|m| m.as_str())
+                .unwrap_or("Unexpected response shape from /v1/models");
+            return Err(err.to_string());
+        }
+    };
+
+    ids.sort();
+    ids.dedup();
+    if ids.is_empty() {
+        return Err("Model list is empty.".to_string());
+    }
+    Ok(ids)
 }
 
 #[tauri::command]

@@ -87,9 +87,10 @@ fn write_claude_config(home_dir: &PathBuf, working_dir: &str, api_key: &str) {
     // Skip onboarding + simulate proper install
     obj.insert("hasCompletedOnboarding".into(), serde_json::json!(true));
     obj.insert("theme".into(), serde_json::json!("dark"));
-    if !obj.contains_key("installMethod") {
-        obj.insert("installMethod".into(), serde_json::json!("native"));
-    }
+    // We spawn the bundled binary directly — Claude Code's self-update has
+    // nothing to manage for us. Removing installMethod silences the
+    // "method is native, but claude command not found" warning.
+    obj.remove("installMethod");
 
     // Pre-approve API key (hash first 20 chars like Claude Code does)
     if !api_key.is_empty() {
@@ -266,22 +267,6 @@ fn configure_minimax_mcp(
     }
 }
 
-fn merge_json(dst: &mut serde_json::Value, src: &serde_json::Value) {
-    match (dst, src) {
-        (serde_json::Value::Object(dst_obj), serde_json::Value::Object(src_obj)) => {
-            for (key, value) in src_obj {
-                match dst_obj.get_mut(key) {
-                    Some(existing) => merge_json(existing, value),
-                    None => {
-                        dst_obj.insert(key.clone(), value.clone());
-                    }
-                }
-            }
-        }
-        (dst_value, src_value) => *dst_value = src_value.clone(),
-    }
-}
-
 /// Windows-only: sync recent-activity history from real ~/.claude into the
 /// isolated home so the "Recent activity" panel is populated.
 /// Focuses on ensuring the current working directory's project slug is present.
@@ -426,224 +411,6 @@ fn sync_user_history_for_windows(home_dir: &PathBuf, working_dir: &str) {
     );
 }
 
-/// Keep the launcher's isolated HOME, but import the user's Claude settings
-/// so proxy/certificate/network env stays available inside packaged builds.
-fn sync_user_settings(home_dir: &PathBuf) {
-    let Some(real_home) = dirs::home_dir() else {
-        return;
-    };
-    let src = real_home.join(".claude").join("settings.json");
-    if !src.exists() {
-        return;
-    }
-
-    let Ok(source_text) = fs::read_to_string(&src) else {
-        return;
-    };
-    let Ok(source_json) = serde_json::from_str::<serde_json::Value>(&source_text) else {
-        return;
-    };
-
-    let dst_dir = home_dir.join(".claude");
-    fs::create_dir_all(&dst_dir).ok();
-    let dst = dst_dir.join("settings.json");
-
-    let mut merged = if dst.exists() {
-        fs::read_to_string(&dst)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}))
-    } else {
-        serde_json::json!({})
-    };
-
-    merge_json(&mut merged, &source_json);
-
-    if let Some(env) = merged.get_mut("env").and_then(|v| v.as_object_mut()) {
-        for key in [
-            "ANTHROPIC_API_KEY",
-            "ANTHROPIC_BASE_URL",
-            "ANTHROPIC_AUTH_TOKEN",
-            "CLAUDE_CODE_OAUTH_TOKEN",
-        ] {
-            env.remove(key);
-        }
-    }
-
-    fs::write(
-        &dst,
-        serde_json::to_string_pretty(&merged).unwrap_or_default(),
-    )
-    .ok();
-}
-
-/// Build a wrapper script that sets env vars then launches Claude Code.
-/// This is more reliable than CommandBuilder::env() on Windows.
-fn build_launch_script(
-    cfg: &config::AppConfig,
-    vhome: &str,
-    working_dir: &str,
-    skip_perms: bool,
-    resources: &Option<PathBuf>,
-) -> Result<PathBuf, String> {
-    let home_dir = isolated_home();
-
-    if cfg!(target_os = "windows") {
-        // Use TEMP dir for the bat file to avoid path issues
-        let temp_dir = std::env::var("TEMP")
-            .or_else(|_| std::env::var("TMP"))
-            .unwrap_or_else(|_| home_dir.to_string_lossy().to_string());
-        let script_path = PathBuf::from(temp_dir).join("claude_launch.bat");
-
-        // Determine claude command
-        let claude_cmd = if let Some(ref res) = resources {
-            let node = res.join("node").join("node.exe");
-            let cli = res
-                .join("claude-code")
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("cli.js");
-            if node.exists() && cli.exists() {
-                format!(
-                    "\"{}\" \"{}\"",
-                    node.to_string_lossy(),
-                    cli.to_string_lossy()
-                )
-            } else {
-                "npx @anthropic-ai/claude-code".to_string()
-            }
-        } else {
-            "npx @anthropic-ai/claude-code".to_string()
-        };
-
-        // Build bat lines
-        let mut lines: Vec<String> = vec!["@echo off".to_string()];
-        lines.push(format!("set \"HOME={}\"", vhome));
-        lines.push(format!("set \"USERPROFILE={}\"", vhome));
-        lines.push(format!("set \"ANTHROPIC_API_KEY={}\"", cfg.api_key));
-        lines.push(format!("set \"ANTHROPIC_BASE_URL={}\"", cfg.base_url));
-        lines.push("set \"FORCE_COLOR=1\"".to_string());
-        lines.push("set \"TERM=xterm-256color\"".to_string());
-
-        // PATH with bundled git and node
-        if let Some(ref res) = resources {
-            let mut extra: Vec<String> = Vec::new();
-            for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node"] {
-                let p = res.join(sub);
-                if p.exists() {
-                    extra.push(p.to_string_lossy().to_string());
-                }
-            }
-            if !extra.is_empty() {
-                lines.push(format!("set \"PATH={};%PATH%\"", extra.join(";")));
-            }
-        }
-
-        lines.push(format!("cd /d \"{}\"", working_dir));
-        lines.push(claude_cmd);
-
-        let bat = lines.join("\r\n") + "\r\n";
-        fs::write(&script_path, &bat).map_err(|e| e.to_string())?;
-        Ok(script_path)
-    } else {
-        let script_path = home_dir.join("_pty_launch.sh");
-
-        let claude_cmd = if let Some(ref res) = resources {
-            let node = res.join("node").join("bin").join("node");
-            let cli = res
-                .join("claude-code")
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("cli.js");
-            if node.exists() && cli.exists() {
-                format!("'{}' '{}'", node.to_string_lossy(), cli.to_string_lossy())
-            } else {
-                "npx @anthropic-ai/claude-code".to_string()
-            }
-        } else {
-            "npx @anthropic-ai/claude-code".to_string()
-        };
-
-        let skip_flag = if skip_perms {
-            " --dangerously-skip-permissions"
-        } else {
-            ""
-        };
-
-        // Save real HOME for reference, then override
-        let real_home = dirs::home_dir()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-
-        // Collect bundled resource paths for PATH
-        let mut extra_paths = Vec::new();
-        if let Some(ref res) = resources {
-            let node_bin = res.join("node").join("bin");
-            if node_bin.exists() {
-                extra_paths.push(node_bin.to_string_lossy().to_string());
-            }
-        }
-
-        let sh = format!(
-            r#"#!/bin/bash
-# === Isolated Claude Code Environment ===
-# Override HOME for Claude Code config isolation
-export REAL_HOME='{real_home}'
-export HOME='{vhome}'
-
-# API configuration
-export ANTHROPIC_API_KEY='{api_key}'
-export ANTHROPIC_BASE_URL='{base_url}'
-
-# Terminal
-export FORCE_COLOR=1
-export TERM=xterm-256color
-
-# Ensure system tools are accessible (macOS GUI apps have minimal PATH)
-export PATH="{extra_path}/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
-
-# Preserve system SSL certificates
-export SSL_CERT_FILE=/etc/ssl/cert.pem
-export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
-
-# Preserve system temp directory
-export TMPDIR="${{TMPDIR:-/tmp}}"
-
-# Copy essential dotfiles to isolated home if missing
-[ -f "$REAL_HOME/.gitconfig" ] && [ ! -f "$HOME/.gitconfig" ] && cp "$REAL_HOME/.gitconfig" "$HOME/.gitconfig" 2>/dev/null
-
-cd '{working_dir}'
-{claude_cmd}{skip_flag}
-"#,
-            real_home = real_home.replace("'", "'\\''"),
-            vhome = vhome.replace("'", "'\\''"),
-            api_key = cfg.api_key.replace("'", "'\\''"),
-            base_url = cfg.base_url.replace("'", "'\\''"),
-            extra_path = if extra_paths.is_empty() {
-                String::new()
-            } else {
-                format!("{}:", extra_paths.join(":"))
-            },
-            working_dir = working_dir.replace("'", "'\\''"),
-            claude_cmd = claude_cmd,
-            skip_flag = skip_flag,
-        );
-        fs::write(&script_path, &sh).map_err(|e| e.to_string())?;
-
-        // Make executable
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).ok();
-        }
-
-        Ok(script_path)
-    }
-}
-
 #[tauri::command]
 pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> Result<(), String> {
     // Gracefully stop any existing session before starting a new one
@@ -710,158 +477,101 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
         })
         .map_err(|e| e.to_string())?;
 
-    // On Windows: write a Node.js wrapper that sets process.env then runs Claude Code.
-    // This bypasses all OS/PTY env var issues entirely.
-    let mut cmd = if cfg!(target_os = "windows") {
-        let res = resources.as_ref().ok_or("Resources directory not found")?;
-        let node = res.join("node").join("node.exe");
-        let cli = res
-            .join("claude-code")
-            .join("node_modules")
-            .join("@anthropic-ai")
-            .join("claude-code")
-            .join("cli.js");
+    // Claude Code 2.1+ ships as a native single-file binary at
+    // claude-code/node_modules/@anthropic-ai/claude-code/bin/claude.exe (the
+    // .exe name is preserved on every OS). We spawn it directly with env vars.
+    let res = resources.as_ref().ok_or_else(|| {
+        let exe_dir = std::env::current_exe()
+            .ok()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .unwrap_or_default();
+        format!("find_resources returned None. exe_dir={:?}", exe_dir)
+    })?;
+    let claude_bin = res.join(crate::launcher::claude_binary_rel());
+    if !claude_bin.exists() {
+        return Err(format!(
+            "Claude Code binary missing at {:?}. Please reinstall the app.",
+            claude_bin
+        ));
+    }
 
-        if !node.exists() {
-            return Err("Claude Code resources are missing. Please reinstall the app.".to_string());
-        }
-        if !cli.exists() {
-            return Err(
-                "Claude Code is not properly installed. Please reinstall the app.".to_string(),
-            );
-        }
+    let mut cmd = CommandBuilder::new(&claude_bin);
+    if skip_perms {
+        cmd.arg("--dangerously-skip-permissions");
+    }
 
-        // Build PATH with bundled git/node/uv
-        let mut extra_paths: Vec<String> = Vec::new();
+    // Resolve active profile (if any) — its fields override top-level config.
+    let active_profile = if cfg.active_profile.is_empty() {
+        None
+    } else {
+        cfg.profiles.iter().find(|p| p.name == cfg.active_profile)
+    };
+
+    // Set exactly ONE auth env var to avoid Claude Code's "Auth conflict"
+    // warning. Profile-defined auth_env wins; default ANTHROPIC_API_KEY.
+    let auth_env_name = active_profile
+        .map(|p| p.auth_env.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ANTHROPIC_API_KEY");
+    cmd.env(auth_env_name, &cfg.api_key);
+
+    cmd.env("ANTHROPIC_BASE_URL", &cfg.base_url);
+
+    // Model: profile.model wins over legacy top-level cfg.model.
+    let model_to_use = active_profile
+        .map(|p| p.model.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| cfg.model.trim());
+    if !model_to_use.is_empty() {
+        cmd.env("ANTHROPIC_MODEL", model_to_use);
+    }
+
+    cmd.env("FORCE_COLOR", "1");
+    cmd.env("TERM", "xterm-256color");
+
+    // Apply the active profile's extra_env (preset env bundle).
+    // Skip auth-related keys — those are already managed above from api_key.
+    if let Some(active) = active_profile {
+        for (k, v) in &active.extra_env {
+            if k.is_empty() { continue; }
+            if matches!(k.as_str(), "ANTHROPIC_API_KEY" | "ANTHROPIC_AUTH_TOKEN") {
+                continue;
+            }
+            cmd.env(k, v);
+        }
+    }
+
+    if cfg!(target_os = "windows") {
+        cmd.env("HOME", &vhome_str);
+        cmd.env("USERPROFILE", &vhome_str);
+        // Build PATH with bundled git/node/uv alongside system PATH
+        let mut extra: Vec<String> = Vec::new();
         for sub in &["git\\cmd", "git\\usr\\bin", "git\\bin", "node", "uv"] {
             let p = res.join(sub);
             if p.exists() {
-                extra_paths.push(p.to_string_lossy().to_string().replace('\\', "/"));
+                extra.push(p.to_string_lossy().to_string());
             }
         }
-        let sys_path = std::env::var("PATH").unwrap_or_default().replace('\\', "/");
-        extra_paths.push(sys_path);
-        let full_path = extra_paths.join(";");
-
-        // Write a JS wrapper that sets env then requires Claude Code directly
-        // No spawn — runs in the same process, avoids all path issues
-        let wrapper_path = vhome.join("_wrapper.js");
-        let cli_escaped = cli.to_string_lossy().replace('\\', "\\\\");
-
-        // Preserve essential system vars for network/SSL/DNS
-        let sys_root = std::env::var("SystemRoot")
-            .unwrap_or_else(|_| "C:\\Windows".to_string())
-            .replace('\\', "/");
-        let sys_temp = std::env::var("TEMP")
-            .unwrap_or_else(|_| format!("{}\\Temp", sys_root))
-            .replace('\\', "/");
-
-        let wrapper_js = format!(
-            r#"// === Isolated Claude Code Environment ===
-// Override HOME/USERPROFILE for config isolation
-process.env.HOME = {home};
-process.env.USERPROFILE = {home};
-
-// API configuration
-process.env.ANTHROPIC_API_KEY = {key};
-process.env.ANTHROPIC_BASE_URL = {url};
-
-// Terminal
-process.env.FORCE_COLOR = "1";
-process.env.TERM = "xterm-256color";
-
-// System paths (bundled git/node + system PATH)
-process.env.PATH = {path};
-delete process.env.CLAUDE_CODE_GIT_BASH_PATH;
-
-// Preserve system essentials for network/SSL/DNS
-process.env.SystemRoot = process.env.SystemRoot || {sys_root};
-process.env.TEMP = process.env.TEMP || {sys_temp};
-process.env.TMP = process.env.TMP || {sys_temp};
-
-try {{ process.chdir({cwd}); }} catch(e) {{}}
-{skip_args}
-require("{cli}");
-"#,
-            home = serde_json::to_string(&vhome_str.replace('\\', "/")).unwrap(),
-            key = serde_json::to_string(&cfg.api_key).unwrap(),
-            url = serde_json::to_string(&cfg.base_url).unwrap(),
-            path = serde_json::to_string(&full_path).unwrap(),
-            sys_root = serde_json::to_string(&sys_root).unwrap(),
-            sys_temp = serde_json::to_string(&sys_temp).unwrap(),
-            cwd = serde_json::to_string(&working_dir.replace('\\', "/")).unwrap(),
-            skip_args = if skip_perms {
-                "process.argv.push('--dangerously-skip-permissions');"
-            } else {
-                ""
-            },
-            cli = cli_escaped,
-        );
-        fs::write(&wrapper_path, &wrapper_js).map_err(|e| e.to_string())?;
-
-        let mut c = CommandBuilder::new(&node);
-        c.arg(&wrapper_path);
-        c
+        let sys_path = std::env::var("PATH").unwrap_or_default();
+        extra.push(sys_path);
+        cmd.env("PATH", extra.join(";"));
     } else {
-        // macOS/Linux: spawn node directly, set env vars via CommandBuilder::env()
-        // This preserves the system environment (SSL, DNS, etc.) while only overriding
-        // what Claude Code needs. Unlike bash script approach, this doesn't break
-        // network by changing HOME at the shell level.
-        let (node_bin, cli_js) = if let Some(ref res) = resources {
-            let n = res.join("node").join("bin").join("node");
-            let c = res
-                .join("claude-code")
-                .join("node_modules")
-                .join("@anthropic-ai")
-                .join("claude-code")
-                .join("cli.js");
-            if n.exists() && c.exists() {
-                (n, c)
-            } else {
-                return Err(
-                    "Claude Code resources are missing. Please reinstall the app.".to_string(),
-                );
-            }
-        } else {
-            return Err("Resources directory not found. Please reinstall the app.".to_string());
-        };
-
-        let mut c = CommandBuilder::new(&node_bin);
-        c.arg(&cli_js);
-        if skip_perms {
-            c.arg("--dangerously-skip-permissions");
-        }
-
-        // Set only what Claude Code needs — system env (SSL, DNS, PATH) stays intact
-        c.env("HOME", &vhome_str);
-        c.env("ANTHROPIC_API_KEY", &cfg.api_key);
-        c.env("ANTHROPIC_BASE_URL", &cfg.base_url);
-        c.env("FORCE_COLOR", "1");
-        c.env("TERM", "xterm-256color");
-
-        // Ensure bundled node + uv are in PATH alongside system tools
-        if let Some(ref res) = resources {
-            let node_bin_dir = res.join("node").join("bin");
-            let uv_bin_dir = res.join("uv").join("bin");
-            let sys_path = std::env::var("PATH").unwrap_or_default();
-            // Add common macOS tool paths that GUI apps might miss
-            c.env(
-                "PATH",
-                format!(
-                    "{}:{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
-                    node_bin_dir.to_string_lossy(),
-                    uv_bin_dir.to_string_lossy(),
-                    sys_path
-                ),
-            );
-        }
-
-        // Ensure SSL works with system certificates
-        c.env("SSL_CERT_FILE", "/etc/ssl/cert.pem");
-        c.env("NODE_EXTRA_CA_CERTS", "/etc/ssl/cert.pem");
-
-        c
-    };
+        cmd.env("HOME", &vhome_str);
+        let node_bin_dir = res.join("node").join("bin");
+        let uv_bin_dir = res.join("uv").join("bin");
+        let sys_path = std::env::var("PATH").unwrap_or_default();
+        cmd.env(
+            "PATH",
+            format!(
+                "{}:{}:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:{}",
+                node_bin_dir.to_string_lossy(),
+                uv_bin_dir.to_string_lossy(),
+                sys_path
+            ),
+        );
+        cmd.env("SSL_CERT_FILE", "/etc/ssl/cert.pem");
+        cmd.env("NODE_EXTRA_CA_CERTS", "/etc/ssl/cert.pem");
+    }
     cmd.cwd(&working_dir);
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;

@@ -61,18 +61,29 @@ Expand-Archive -Path $UvArchive -DestinationPath "$ResourceDir\uv" -Force
 Remove-Item -Force $UvArchive
 
 # --- Claude Code ---
+# Since 2.1.x, @anthropic-ai/claude-code ships a native binary; the package's
+# postinstall (install.cjs) copies the platform binary to bin/claude.exe.
+# Do NOT silence stderr — if postinstall fails, we need to see why.
 Write-Host "--- Installing @anthropic-ai/claude-code ---"
 Push-Location "$ResourceDir\claude-code"
 
 $env:PATH = "$ResourceDir\node;$ResourceDir\git\cmd;$env:PATH"
-& "$ResourceDir\node\npm.cmd" init -y 2>$null | Out-Null
-& "$ResourceDir\node\npm.cmd" install @anthropic-ai/claude-code --save 2>$null | Out-Null
+& "$ResourceDir\node\npm.cmd" init -y | Out-Null
+& "$ResourceDir\node\npm.cmd" install @anthropic-ai/claude-code@latest --save --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) {
+    throw "npm install failed (exit $LASTEXITCODE)"
+}
 
 Pop-Location
+
+$ClaudeBin = "$ResourceDir\claude-code\node_modules\@anthropic-ai\claude-code\bin\claude.exe"
+if (-not (Test-Path $ClaudeBin)) {
+    throw "Claude Code native binary missing at $ClaudeBin. Postinstall (install.cjs) likely failed — check npm output above."
+}
 
 Write-Host "=== Resources ready ==="
 Write-Host "Node: $(Get-ChildItem $ResourceDir\node\node.exe)"
 Write-Host "Git: $(Get-ChildItem $ResourceDir\git\cmd\git.exe)"
 Write-Host "Bash: $(Get-ChildItem $ResourceDir\git\bin\bash.exe -ErrorAction SilentlyContinue)"
 Write-Host "uv: $(Get-ChildItem $ResourceDir\uv\uv.exe -ErrorAction SilentlyContinue)"
-Write-Host "Claude Code: $(Get-ChildItem $ResourceDir\claude-code\node_modules\@anthropic-ai\claude-code\cli.js)"
+Write-Host "Claude Code: $(Get-ChildItem $ClaudeBin)"
