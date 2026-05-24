@@ -528,6 +528,12 @@ pub fn spawn_claude(app: AppHandle, state: tauri::State<'_, SharedPtyState>) -> 
 
     cmd.env("FORCE_COLOR", "1");
     cmd.env("TERM", "xterm-256color");
+    // Prevent the bundled native binary from self-updating in place. The CLI's
+    // self-updater renames claude.exe -> claude.exe.old.<ts> then downloads a
+    // new one; if that download is interrupted the bundle is left with no
+    // usable claude.exe and find_resources() returns None. Updates go through
+    // the app's "update Claude Code" button (npm reinstall) instead.
+    cmd.env("DISABLE_AUTOUPDATER", "1");
 
     // Apply the active profile's extra_env (preset env bundle).
     // Skip auth-related keys — those are already managed above from api_key.
