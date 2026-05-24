@@ -19,10 +19,19 @@ jobs:
         include:
           - platform: windows-latest
             prep: pwsh scripts/prepare-resources-win.ps1
-            label: Windows
+            args: ""
+            rust_target: ""
+            label: Windows-x64
           - platform: macos-latest
             prep: bash scripts/prepare-resources.sh
-            label: macOS
+            args: "--target aarch64-apple-darwin"
+            rust_target: aarch64-apple-darwin
+            label: macOS-arm64
+          - platform: macos-latest
+            prep: bash scripts/prepare-resources-mac-x64.sh
+            args: "--target x86_64-apple-darwin"
+            rust_target: x86_64-apple-darwin
+            label: macOS-x64
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v5
@@ -34,6 +43,8 @@ jobs:
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -84,6 +95,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CI: true
         with:
+          args: ${{ matrix.args }}
           tagName: ${{ github.event_name == 'push' && github.ref_name || steps.auto_tag.outputs.tag }}
           releaseName: "Claude Code Launcher ${{ github.event_name == 'push' && github.ref_name || steps.auto_tag.outputs.tag }}"
           releaseBody: |
@@ -91,8 +103,9 @@ jobs:
 
             一键启动器,内置 Node.js + Claude Code 原生二进制,免装。
 
-            - **Windows**: 下载 `.exe` 安装包(x64)
-            - **macOS**: 下载 `.dmg`(Apple Silicon)
+            - **Windows (x64)**: 下载 `_x64-setup.exe`
+            - **macOS (Apple Silicon)**: 下载 `_aarch64.dmg`
+            - **macOS (Intel)**: 下载 `_x64.dmg`
 
             使用步骤:
             1. 安装并打开应用

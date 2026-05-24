@@ -244,7 +244,7 @@ export default function Chat({ onSettings }: Props) {
   return (
     <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100%", background: T.bg, gap: 24 }}>
       <h1 style={{ fontSize: 28, fontWeight: 700, color: T.text }}>{t(lang, "appName")}</h1>
-      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v{__PACKAGING_CONFIG__?.version || "0.9.8"}</span>
+      <span style={{ fontSize: 12, color: T.textMuted, marginTop: -16 }}>v{__PACKAGING_CONFIG__?.version || __APP_VERSION__}</span>
 
       {/* Connection status */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>

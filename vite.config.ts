@@ -16,10 +16,14 @@ try {
   }
 } catch {}
 
+// Single source of truth for the displayed version: package.json.
+const appVersion = JSON.parse(fs.readFileSync("./package.json", "utf8")).version;
+
 export default defineConfig(async () => ({
   plugins: [react()],
   define: {
     __PACKAGING_CONFIG__: JSON.stringify(packagingConfig),
+    __APP_VERSION__: JSON.stringify(appVersion),
   },
   clearScreen: false,
   server: {

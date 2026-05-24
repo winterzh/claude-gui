@@ -38,3 +38,4 @@ interface PackagingConfig {
 }
 
 declare const __PACKAGING_CONFIG__: PackagingConfig | null;
+declare const __APP_VERSION__: string;
