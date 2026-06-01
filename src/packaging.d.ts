@@ -18,6 +18,9 @@ interface PackagingConfig {
       name: string;
       api_key: string;
       base_url: string;
+      model?: string;
+      auth_env?: string;
+      extra_env?: Record<string, string>;
       msg_zh: string;
       msg_en: string;
     }

@@ -271,15 +271,36 @@ export default function Setup({ onSaved }: Props) {
     setActiveProfile(p.name);
     setApiKey(p.api_key);
     setBaseUrl(p.base_url);
+    if (p.model) setModel(p.model);
     setEditingKey(false);
     setEditingUrl(false);
     await invoke("save_profiles", { profiles: updated, activeProfile: p.name });
     await invoke("save_config", { apiKey: p.api_key, baseUrl: p.base_url });
+    if (p.model) await invoke("save_model_pref", { model: p.model });
     setSecretResult({ ok: true, msg });
   };
 
+  // MiniMax M3 env bundle — per https://platform.minimaxi.com/docs/guides/text-ai-coding-tools
+  // All of Sonnet/Opus/Haiku map to MiniMax-M3.
+  const MINIMAX_M3_ENV: Record<string, string> = {
+    API_TIMEOUT_MS: "3000000",
+    CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1",
+    ANTHROPIC_DEFAULT_SONNET_MODEL: "MiniMax-M3",
+    ANTHROPIC_DEFAULT_OPUS_MODEL: "MiniMax-M3",
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: "MiniMax-M3",
+  };
+
   const DEFAULT_SECRETS: Record<string, Profile & { msg_zh: string; msg_en: string }> = {
-    cclxy01: { name: "anthropic", api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc", base_url: "https://api.minimaxi.com/anthropic", msg_zh: "已添加 anthropic 配置", msg_en: "Added anthropic profile" },
+    cclxy01: {
+      name: "anthropic",
+      api_key: "sk-cp-TdDmhtS01gg4q0XhPIGfNPa0_XCpbLplp0KZnLGlUw7OqS1OsZklXwMcYNnF0oGYgeYHkXA8c9vSBroeQeDw3sFP_lkVXwf9FwcprnsZacsKqThDPEicLTc",
+      base_url: "https://api.minimaxi.com/anthropic",
+      model: "MiniMax-M3",
+      auth_env: "ANTHROPIC_AUTH_TOKEN",
+      extra_env: MINIMAX_M3_ENV,
+      msg_zh: "已添加 anthropic 配置 (MiniMax-M3)",
+      msg_en: "Added anthropic profile (MiniMax-M3)",
+    },
     cclxy02: { name: "pincc", api_key: "sk-ec4a1f370b6abd167191536c3f2441ad2d4a45d65c40cae4ca76039aa0caa011", base_url: "https://v2.pincc.ai", msg_zh: "已添加 pincc 配置", msg_en: "Added pincc profile" },
   };
   const SECRETS = __PACKAGING_CONFIG__?.activationCodes || DEFAULT_SECRETS;
@@ -287,7 +308,17 @@ export default function Setup({ onSaved }: Props) {
   const handleSecret = () => {
     const s = SECRETS[secretCode.trim()];
     if (s) {
-      applySecretProfile({ name: s.name, api_key: s.api_key, base_url: s.base_url }, lang === "zh" ? s.msg_zh : s.msg_en);
+      applySecretProfile(
+        {
+          name: s.name,
+          api_key: s.api_key,
+          base_url: s.base_url,
+          model: s.model,
+          auth_env: s.auth_env,
+          extra_env: s.extra_env,
+        },
+        lang === "zh" ? s.msg_zh : s.msg_en,
+      );
     } else {
       setSecretResult({ ok: false, msg: lang === "zh" ? "无效密码" : "Invalid code" });
     }
